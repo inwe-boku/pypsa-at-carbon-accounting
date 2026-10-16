@@ -44,7 +44,7 @@ def test_custom_clustering_matches_admin_levels(config):
 
 def test_no_island_splits(config):
     levels = config["clustering"]["administrative"]
-    assert all(levels[country] == 0 for country in ("DK", "GB", "IT"))
+    assert all(levels[country] == 0 for country in ("DK", "IT"))
 
 
 def test_solver_is_gurobi(config):

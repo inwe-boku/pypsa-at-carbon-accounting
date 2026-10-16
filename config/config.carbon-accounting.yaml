@@ -23,13 +23,15 @@ run:
 # The smallest clustering supported by mods.clustering.custom is AT10DE5:
 # Austria at NUTS2 (10 regions) and Germany in 5 macro-regions. AT/DE at
 # level 0 is not available. All other countries are one node each; the
-# island splits of IT, DK and GB are dropped.
+# island splits of IT and DK are dropped. GB stays split (GB0/GB1): at level 0
+# Northern Ireland remains a separate bus "GBI" which breaks the prefix-based
+# location lookups in mods.network.trajectories.
 clustering:
   administrative:
     AT: 2
     DE: 3
     DK: 0
-    GB: 0
+    GB: 1
     IT: 0
 
 mods:

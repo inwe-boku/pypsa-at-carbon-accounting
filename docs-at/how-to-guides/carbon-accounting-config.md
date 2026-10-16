@@ -17,7 +17,7 @@ Results are written to `results/carbon-accounting/<scenario>/`.
 | Setting | Default (`config.at.yaml`) | Carbon accounting |
 |---|---|---|
 | `mods.modify_nuts3_shapes` | `AT35DE5` | `AT10DE5` |
-| `clustering.administrative` | AT 3, DE 3, DK/GB/IT 1 | AT 2, DE 3, DK/GB/IT 0 |
+| `clustering.administrative` | AT 3, DE 3, DK/GB/IT 1 | AT 2, DE 3, GB 1, DK/IT 0 |
 | `solving.solver` | HiGHS (`ipx`) | Gurobi (`gurobi-default`) |
 | `run.scenarios.file` | `scenarios.manual.yaml` | `scenarios.carbon-accounting.yaml` |
 

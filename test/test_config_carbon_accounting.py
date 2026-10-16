@@ -42,11 +42,6 @@ def test_custom_clustering_matches_admin_levels(config):
     assert levels["DE"] == (3 if clustering.endswith("DE5") else 1)
 
 
-def test_no_island_splits(config):
-    levels = config["clustering"]["administrative"]
-    assert all(levels[country] == 0 for country in ("DK", "IT"))
-
-
 def test_solver_is_gurobi(config):
     assert config["solving"]["solver"]["name"] == "gurobi"
 

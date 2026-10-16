@@ -12,6 +12,18 @@ pixi run snakemake -call --configfile config/config.carbon-accounting.yaml
 
 Results are written to `results/carbon-accounting/<scenario>/`.
 
+Measured run time per horizon (Gurobi 13, 32 cores), excluding the one-off
+retrieve and build steps:
+
+| Horizon | compose | solve |
+|---|---|---|
+| 2025 | 1:08 min | 0:49 min |
+| 2030 | 2:30 min | 1:05 min |
+| 2040 | 2:29 min | 1:07 min |
+| 2050 | 2:14 min | 0:54 min |
+
+The evaluations export (`export_evaluation_pypsa_at`) adds about 16 minutes.
+
 ## What differs from the default PyPSA-AT configuration
 
 | Setting | Default (`config.at.yaml`) | Carbon accounting |

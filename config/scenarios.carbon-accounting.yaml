@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2023-2026 Austrian Gas Grid Management AG
+#
+# SPDX-License-Identifier: MIT
+# For license information, see the LICENSE.txt file in the project root.
+
+# Scenarios for config/config.carbon-accounting.yaml. Add one entry per
+# carbon accounting variant; keep the reductions of the base config untouched.
+
+CA_base:
+  description: Reduced PyPSA-AT base model (AT10DE5, Gurobi) for carbon accounting comparisons

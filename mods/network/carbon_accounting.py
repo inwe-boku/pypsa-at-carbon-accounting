@@ -505,6 +505,33 @@ def add_attribute_ports(n: pypsa.Network) -> None:
     add_link_port(n, out.index, bus, out.efficiency)
 
 
+def price_claims(n: pypsa.Network, cts: list[str], claim_cost: float) -> None:
+    """
+    Put a small cost on the claims of countries with a national CO2 budget.
+
+    Without it, the optimiser is indifferent to which country claims pooled
+    credits while no national budget binds. With it, these countries only
+    claim what their budget needs, and the rest goes to the other countries.
+
+    Parameters
+    ----------
+    n
+        The network, modified in place.
+    cts
+        Country codes with a national CO2 budget.
+    claim_cost
+        Cost in EUR per t of CO2 credited.
+
+    Returns
+    -------
+    :
+        Modifies the network in place.
+    """
+    claims = n.links.carrier.isin(CLAIM_CARRIERS.values())
+    idx = n.links.index[claims & n.links.index.str[:2].isin(cts)]
+    n.links.loc[idx, "marginal_cost"] = -n.links.loc[idx, "efficiency"] * claim_cost
+
+
 def add_removal_ports(n: pypsa.Network) -> None:
     """
     Connect sequestration links to the EU pool of removal attributes.
@@ -590,7 +617,8 @@ def apply_carbon_accounting(
         If the method is unknown or a link carrier at a CO2 or fuel bus is
         not classified.
     """
-    method = carbon_accounting_method(snakemake.config["mods"]["carbon_accounting"])
+    config = snakemake.config["mods"]["carbon_accounting"]
+    method = carbon_accounting_method(config)
     if method != "carrier":
         return
 
@@ -609,3 +637,6 @@ def apply_carbon_accounting(
     add_attribute_ports(n)
     add_removal_ports(n)
     mark_transformed(n)
+
+    budgets = snakemake.config["solving"]["constraints"]["co2_budget_national"] or {}
+    price_claims(n, list(budgets), config["claim_cost"])

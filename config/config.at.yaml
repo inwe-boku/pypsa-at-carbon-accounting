@@ -457,3 +457,6 @@ mods:
   carbon_accounting:
     enable: true
     method: technology  # technology (status quo) | carrier (green fuels book zero)
+    # EUR/t CO2 on the claims of countries with a national CO2 budget (carrier
+    # method only): they claim pooled credits only when their budget needs them
+    claim_cost: 0.01

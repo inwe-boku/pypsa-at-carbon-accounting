@@ -4,22 +4,42 @@
 # For license information, see the LICENSE.txt file in the project root.
 """Toy solves for mods/constraints/carbon_accounting.py (spec section 6, U7-U9)."""
 
+import warnings
 from types import SimpleNamespace
 
 import pandas as pd
 import pypsa
 import pytest
 
+from evals.constants import DataModel
+from evals.stats import collect_myopic_statistics
+from evals.utils import get_energy_totals_domestic_share, scale_domestic_aviation
+from mods.constants import (
+    ATTRIBUTE_CARRIERS,
+    AVIATION_CARRIERS,
+    CLAIM_CARRIERS,
+    GREEN_BIO_PRODUCERS,
+    GREEN_IMPORTS,
+)
 from mods.constraints.carbon_accounting import (
     claimable_consumers,
     constraint_carbon_accounting,
 )
 from mods.constraints.co2_budget import constraint_national_co2_budgets
-from mods.network.carbon_accounting import apply_carbon_accounting, link_ports
+from mods.network.carbon_accounting import (
+    TRANSFORMATION_CLASSES,
+    apply_carbon_accounting,
+    gas_borders,
+    link_ports,
+    port_bus_carrier,
+    port_efficiency,
+)
+from test.conftest import require_config
 from test.test_mods.conftest import (
     EF,
     build_carbon_network,
     build_gas_toy,
+    build_oil_toy,
     carbon_accounting_costs,
     carbon_accounting_snakemake,
 )
@@ -158,57 +178,6 @@ def test_aviation_claims_scaled_in_national_budget(tmp_path):
     assert claim == pytest.approx(-EF["oil"] * alpha * snapshots)
     assert kerosene == pytest.approx(EF["oil"] * alpha * snapshots)
     assert shipping == pytest.approx(EF["oil"] * snapshots)
-
-
-def build_oil_toy() -> pypsa.Network:
-    """
-    Extend the gas toy with oil: Fischer-Tropsch in AT, oil users in both.
-
-    AT1 makes 10 MW of synthetic oil from H2 and stored CO2. AT1 and DE1 each
-    burn 10 MW in shipping and fossil oil covers the rest. A DE reward on
-    claims shows that oil attributes reach any country (EU pool).
-    """
-    n = build_gas_toy()
-    for node in ("AT1",):
-        n.add("Bus", f"{node} H2", carrier="H2", location=node)
-        n.add("Bus", f"{node} co2 stored", carrier="co2 stored", location=node)
-        n.add("Generator", f"{node} H2", bus=f"{node} H2", carrier="H2", p_nom=100)
-        n.add(
-            "Generator",
-            f"{node} co2 stored",
-            bus=f"{node} co2 stored",
-            carrier="co2 stored",
-            p_nom=100,
-        )
-    n.add(
-        "Link",
-        "AT1 Fischer-Tropsch",
-        carrier="Fischer-Tropsch",
-        bus0="AT1 H2",
-        bus1="EU oil",
-        bus2="AT1 co2 stored",
-        efficiency=1.0,
-        efficiency2=-EF["oil"],
-        p_nom=10,
-        p_min_pu=1,
-    )
-    n.add(
-        "Generator", "EU oil", bus="EU oil", carrier="oil", p_nom=100, marginal_cost=50
-    )
-    for node in ("AT1", "DE1"):
-        n.add("Bus", f"{node} shipping", carrier="shipping oil", location=node)
-        n.add("Load", f"{node} shipping", bus=f"{node} shipping", p_set=10)
-        n.add(
-            "Link",
-            f"{node} shipping oil",
-            carrier="shipping oil",
-            bus0="EU oil",
-            bus1=f"{node} shipping",
-            bus2="co2 atmosphere",
-            efficiency2=EF["oil"],
-            p_nom=100,
-        )
-    return n
 
 
 def test_oil_attributes_are_pooled():
@@ -352,3 +321,148 @@ class TestRemovalClaims:
         p0 = n.links_t.p0.sum()
         assert p0["AT co2 removal claim"] == pytest.approx(10.0)
         assert p0["NL co2 removal claim"] == pytest.approx(8.0)
+
+
+def _require_carrier(nc) -> None:
+    """Skip the integration tests for runs without carrier-based accounting."""
+    require_config(nc, "mods", "carbon_accounting")
+    for n in nc:
+        if n.meta["mods"]["carbon_accounting"]["method"] != "carrier":
+            pytest.skip("integration tests need method 'carrier'")
+
+
+def _annual_p0(n: pypsa.Network) -> pd.Series:
+    weightings = n.snapshot_weightings.generators
+    return (
+        n.links_t.p0.mul(weightings, axis=0).sum().reindex(n.links.index, fill_value=0)
+    )
+
+
+def _gross_delta(n: pypsa.Network) -> pd.Series:
+    """Return ``stored + EF_out * out`` of the transformed classes (section 3.2)."""
+    ef = {
+        fuel: -n.links.efficiency[n.links.carrier == CLAIM_CARRIERS[fuel]].iloc[0]
+        for fuel in ("gas", "oil", "methanol")
+    }
+    carriers = [c for k in ("G1", "C1", "V1") for c in TRANSFORMATION_CLASSES[k]]
+    idx = n.links.index[n.links.carrier.isin(carriers)]
+    delta = pd.Series(0.0, index=idx)
+    producer = n.links.loc[idx, "carrier"].isin(GREEN_BIO_PRODUCERS)
+    for port in link_ports(n):
+        carrier = port_bus_carrier(n, port).loc[idx]
+        efficiency = port_efficiency(n, port).loc[idx]
+        delta += efficiency.where(carrier == "co2 stored", 0.0)
+        if port != "0":
+            output = efficiency.clip(lower=0).where(producer, 0.0)
+            delta += carrier.map(ef).fillna(0.0) * output
+    return delta
+
+
+class TestSolvedNetworks:
+    """Integration tests I1-I5 on a run with method 'carrier'."""
+
+    @pytest.fixture(autouse=True)
+    def carrier_run(self, nc):
+        _require_carrier(nc)
+
+    def test_same_total_as_technology(self, nc):
+        """I1: the EU total equals its technology equivalent (inverse rule)."""
+        for n in nc:
+            p0 = _annual_p0(n)
+            emissions = booked(n)
+            claims = n.links.carrier.isin(CLAIM_CARRIERS.values())
+            imports = n.links.carrier.isin(GREEN_IMPORTS)
+            delta = _gross_delta(n)
+            # carrier total = technology total + delta - imports + claims
+            difference = (
+                emissions[claims].sum()
+                + (delta * p0[delta.index]).sum()
+                + p0[imports].sum()
+            )
+            assert abs(difference) <= 1e-6 * emissions.abs().sum()
+
+    def test_attributes_fully_retired(self, nc):
+        """I2: every attribute store is empty again at the end of the year."""
+        for n in nc:
+            stores = n.stores.index[n.stores.carrier.isin(ATTRIBUTE_CARRIERS.values())]
+            weightings = n.snapshot_weightings.stores
+            net = n.stores_t.p[stores].mul(weightings, axis=0).sum()
+            assert net.abs().max() <= 1e-3
+
+    def test_only_claims_book_negative(self, nc):
+        """I3: negative annual emissions only from claims and municipal waste."""
+        allowed = {*CLAIM_CARRIERS.values(), "municipal solid waste"}
+        for n in nc:
+            emissions = booked(n)
+            p0 = _annual_p0(n).abs()
+            negative = emissions[emissions < 0]
+            negative = negative[~n.links.loc[negative.index, "carrier"].isin(allowed)]
+            # tolerated: G1 residuals of at most 1e-3 t/MWh and solver noise
+            assert (negative >= -1e-3 * p0[negative.index] - 1e-3).all(), negative
+
+    def test_gas_circulation(self, nc):
+        """I4: report the smaller directional gas flow per border."""
+        for year, n in nc.networks.items():
+            p0 = _annual_p0(n)
+            borders = gas_borders(n)
+            flows = p0[borders.index].groupby([borders["from"], borders["to"]]).sum()
+            for (x, y), forward in flows.items():
+                backward = flows.get((y, x), 0.0)
+                if x < y and min(forward, backward) > 0.05 * max(forward, backward):
+                    warnings.warn(
+                        f"{year}: gas flows {x}->{y} {forward:.3g} MWh and "
+                        f"{y}->{x} {backward:.3g} MWh in both directions.",
+                        stacklevel=1,
+                    )
+
+    @pytest.mark.parametrize("ct", ["AT", "DE"])
+    def test_national_budget_matches_evals(self, nc, ct):
+        """I5: the national LHS equals the evals CO2 balance of the country."""
+        first = nc[nc.index[0]]
+        energy_totals = pd.DataFrame.from_dict(
+            first.meta["resources"]["energy_totals"], orient="tight"
+        )
+        alpha = get_energy_totals_domestic_share(energy_totals, kind="aviation")
+        balance = collect_myopic_statistics(
+            nc, "energy_balance", bus_carrier="co2", aggregate_components=None
+        )
+        balance = scale_domestic_aviation(balance, alpha)
+        for year, n in nc.networks.items():
+            emissions = booked(n)
+            emissions = emissions[emissions.index.str.startswith(ct)]
+            aviation = n.links.loc[emissions.index, "carrier"].isin(AVIATION_CARRIERS)
+            lhs = emissions[~aviation].sum() + alpha[ct] * emissions[aviation].sum()
+
+            evals = balance.xs(year, level=DataModel.YEAR)
+            location = evals.index.get_level_values(DataModel.LOCATION)
+            # the evals book from the atmosphere's point of view: supply is positive
+            in_country = location.str.startswith(ct)
+            components = evals.index.get_level_values("component")
+            evals_total = evals[in_country & (components == "Link")].sum()
+            assert evals_total == pytest.approx(lhs, rel=1e-6, abs=1.0)
+
+
+class TestClaimCost:
+    """Countries with a national budget only claim what the budget needs."""
+
+    def test_marginal_cost_per_t(self, carbon_network):
+        snakemake = carbon_accounting_snakemake(budgets=("AT",))
+        apply_carbon_accounting(carbon_network, snakemake, carbon_accounting_costs())
+        cost = carbon_network.links.marginal_cost
+        assert cost["AT renewable oil claim"] == pytest.approx(0.01 * EF["oil"])
+        assert cost["AT co2 removal claim"] == pytest.approx(0.01)
+        assert cost["DE renewable oil claim"] == 0.0
+
+    def test_slack_budget_country_does_not_claim(self):
+        n = build_oil_toy()
+        snakemake = carbon_accounting_snakemake(budgets=("DE",))
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        n.optimize(
+            solver_name="highs",
+            extra_functionality=lambda n, _: constraint_carbon_accounting(
+                n, snakemake, 2050
+            ),
+        )
+        p0 = n.links_t.p0.sum()
+        assert p0["DE renewable oil claim"] == pytest.approx(0.0, abs=1e-6)
+        assert p0["AT renewable oil claim"] == pytest.approx(20.0)

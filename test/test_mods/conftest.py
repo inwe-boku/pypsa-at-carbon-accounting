@@ -15,11 +15,16 @@ EF = {"gas": 0.198, "oil": 0.2571, "methanol": 0.248}
 
 
 def carbon_accounting_snakemake(
-    method: str = "carrier", enable: bool = True
+    method: str = "carrier", enable: bool = True, budgets: tuple[str, ...] = ()
 ) -> SimpleNamespace:
     """Return a minimal Snakemake stand-in with the carbon accounting config."""
+    accounting = {"enable": enable, "method": method, "claim_cost": 0.01}
+    national = {ct: {2050: 0.5} for ct in budgets}
     return SimpleNamespace(
-        config={"mods": {"carbon_accounting": {"enable": enable, "method": method}}}
+        config={
+            "mods": {"carbon_accounting": accounting},
+            "solving": {"constraints": {"co2_budget_national": national}},
+        }
     )
 
 
@@ -291,4 +296,55 @@ def build_gas_toy(
             p_nom=100,
         )
         n.add("Load", f"{node} heat", bus=f"{node} heat", p_set=10)
+    return n
+
+
+def build_oil_toy() -> pypsa.Network:
+    """
+    Extend the gas toy with oil: Fischer-Tropsch in AT, oil users in both.
+
+    AT1 makes 10 MW of synthetic oil from H2 and stored CO2. AT1 and DE1 each
+    burn 10 MW in shipping and fossil oil covers the rest. A DE reward on
+    claims shows that oil attributes reach any country (EU pool).
+    """
+    n = build_gas_toy()
+    for node in ("AT1",):
+        n.add("Bus", f"{node} H2", carrier="H2", location=node)
+        n.add("Bus", f"{node} co2 stored", carrier="co2 stored", location=node)
+        n.add("Generator", f"{node} H2", bus=f"{node} H2", carrier="H2", p_nom=100)
+        n.add(
+            "Generator",
+            f"{node} co2 stored",
+            bus=f"{node} co2 stored",
+            carrier="co2 stored",
+            p_nom=100,
+        )
+    n.add(
+        "Link",
+        "AT1 Fischer-Tropsch",
+        carrier="Fischer-Tropsch",
+        bus0="AT1 H2",
+        bus1="EU oil",
+        bus2="AT1 co2 stored",
+        efficiency=1.0,
+        efficiency2=-EF["oil"],
+        p_nom=10,
+        p_min_pu=1,
+    )
+    n.add(
+        "Generator", "EU oil", bus="EU oil", carrier="oil", p_nom=100, marginal_cost=50
+    )
+    for node in ("AT1", "DE1"):
+        n.add("Bus", f"{node} shipping", carrier="shipping oil", location=node)
+        n.add("Load", f"{node} shipping", bus=f"{node} shipping", p_set=10)
+        n.add(
+            "Link",
+            f"{node} shipping oil",
+            carrier="shipping oil",
+            bus0="EU oil",
+            bus1=f"{node} shipping",
+            bus2="co2 atmosphere",
+            efficiency2=EF["oil"],
+            p_nom=100,
+        )
     return n

@@ -329,3 +329,13 @@ def test_claims_are_located_in_their_country(carbon_network):
     ]
     assert not claims.empty
     assert (location[claims] == claims.str[:2]).all()
+
+
+def test_sequestration_creates_removal_attributes(carbon_network):
+    """Section 3.3: one removal attribute per t sequestered, pooled EU-wide."""
+    _apply(carbon_network)
+    bus = "EU co2 removal attribute"
+    assert carbon_network.buses.at[bus, "unit"] == "t_co2"
+    assert _port_to(carbon_network, "AT1 co2 sequestered", bus) == 1.0
+    claim = carbon_network.links.loc["AT co2 removal claim"]
+    assert (claim.bus0, claim.efficiency) == ("AT co2 removal attribute", -1.0)

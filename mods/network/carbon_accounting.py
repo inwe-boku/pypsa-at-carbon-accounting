@@ -95,6 +95,7 @@ CLAIMS: dict[str, tuple[str, ...]] = {
     "gas": ("gas",),
     "oil": ("oil", "oil aviation"),
     "methanol": ("methanol",),
+    "removal": ("removal",),
 }
 POOL = "EU"
 
@@ -435,6 +436,8 @@ def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
     _add_gas_layer(n, ef)
     for fuel in ("oil", "methanol"):
         _add_pooled_layer(n, fuel, ef[fuel])
+    # one removal attribute per t of sequestered CO2, claimed at -1 t (D2, D15)
+    _add_pooled_layer(n, "removal", 1.0)
 
     # green imports draw their carbon from a virtual source instead of the
     # atmosphere (section 3.4)
@@ -493,6 +496,32 @@ def add_attribute_ports(n: pypsa.Network) -> None:
         dtype=object,
     )
     add_link_port(n, out.index, bus, out.efficiency)
+
+
+def add_removal_ports(n: pypsa.Network) -> None:
+    """
+    Connect sequestration links to the EU pool of removal attributes.
+
+    Each unmarked ``co2 sequestered`` link creates one removal attribute per
+    t of CO2 it sequesters (D2).
+
+    Parameters
+    ----------
+    n
+        The network, modified in place.
+
+    Returns
+    -------
+    :
+        Modifies the network in place.
+    """
+    idx = class_links(n, "S1")
+    sequestered = pd.Series(0.0, index=idx)
+    for port in link_ports(n)[1:]:
+        at_sink = port_bus_carrier(n, port).loc[idx] == "co2 sequestered"
+        sequestered += port_efficiency(n, port).loc[idx].where(at_sink, 0.0)
+    bus = pd.Series(attribute_bus(POOL, "removal"), index=idx)
+    add_link_port(n, idx, bus, sequestered)
 
 
 def mark_transformed(n: pypsa.Network) -> None:
@@ -571,4 +600,5 @@ def apply_carbon_accounting(
     add_accounting_layer(n, ef)
     transform_emission_ports(n, ef)
     add_attribute_ports(n)
+    add_removal_ports(n)
     mark_transformed(n)

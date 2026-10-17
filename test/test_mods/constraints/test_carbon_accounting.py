@@ -260,3 +260,95 @@ def test_oil_claims_bounded_by_consumption():
 def test_claimable_consumers(carbon_network, claim, expected):
     """Claims are bounded by consumption, split for aviation; pipelines are excluded."""
     assert claimable_consumers(carbon_network, "AT", claim).tolist() == expected
+
+
+def build_removal_toy(nl_capture: float = 0.0) -> pypsa.Network:
+    """
+    Build a toy with DAC in AT and storage in NL.
+
+    AT1 captures 5 t/h with DAC and pipes it to NL1, where it is sequestered.
+    NL1 can capture extra CO2 itself.
+    """
+    n = pypsa.Network()
+    n.set_snapshots(range(2))
+    n.add("Bus", "co2 atmosphere", carrier="co2", location="EU", unit="t_co2")
+    n.add(
+        "Store",
+        "co2 atmosphere",
+        bus="co2 atmosphere",
+        carrier="co2",
+        e_nom_extendable=True,
+        e_min_pu=-1,
+    )
+    for node, capture in (("AT1", 5.0), ("NL1", nl_capture)):
+        n.add("Bus", node, carrier="AC", location=node)
+        n.add("Generator", node, bus=node, carrier="AC", p_nom=100, marginal_cost=1)
+        n.add("Bus", f"{node} co2 stored", carrier="co2 stored", location=node)
+        n.add(
+            "Link",
+            f"{node} DAC",
+            carrier="DAC",
+            bus0=node,
+            bus1=f"{node} co2 stored",
+            bus2="co2 atmosphere",
+            efficiency2=-1.0,
+            p_nom=capture,
+            p_min_pu=1,
+        )
+    n.add("Bus", "NL1 co2 sequestered", carrier="co2 sequestered", location="NL1")
+    n.add(
+        "Store",
+        "NL1 co2 sequestered",
+        bus="NL1 co2 sequestered",
+        carrier="co2 sequestered",
+        e_nom_extendable=True,
+    )
+    n.add(
+        "Link",
+        "CO2 pipeline AT1 -> NL1",
+        carrier="CO2 pipeline",
+        bus0="AT1 co2 stored",
+        bus1="NL1 co2 stored",
+        p_nom=100,
+    )
+    n.add(
+        "Link",
+        "NL1 co2 sequestered",
+        carrier="co2 sequestered",
+        bus0="NL1 co2 stored",
+        bus1="NL1 co2 sequestered",
+        p_nom=100,
+    )
+    return n
+
+
+class TestRemovalClaims:
+    """U9: capture in AT, sequestration in NL."""
+
+    def test_credit_goes_to_capturing_country(self):
+        n = solve(build_removal_toy(), "carrier")
+        p0 = n.links_t.p0.sum()
+        assert p0["AT co2 removal claim"] == pytest.approx(10.0)
+        assert p0["NL co2 removal claim"] == pytest.approx(0.0, abs=1e-6)
+        assert national(n, "AT") == pytest.approx(-10.0)
+        assert national(n, "NL") == pytest.approx(0.0, abs=1e-6)
+
+    def test_same_total_as_technology(self):
+        carrier = solve(build_removal_toy(), "carrier")
+        technology = solve(build_removal_toy(), "technology")
+        assert booked(carrier).sum() == pytest.approx(booked(technology).sum())
+
+    def test_claims_bounded_by_capture(self):
+        n = build_removal_toy(nl_capture=4.0)
+        snakemake = carbon_accounting_snakemake()
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        n.links.loc["AT co2 removal claim", "marginal_cost"] = -1.0
+        n.optimize(
+            solver_name="highs",
+            extra_functionality=lambda n, _: constraint_carbon_accounting(
+                n, snakemake, 2050
+            ),
+        )
+        p0 = n.links_t.p0.sum()
+        assert p0["AT co2 removal claim"] == pytest.approx(10.0)
+        assert p0["NL co2 removal claim"] == pytest.approx(8.0)

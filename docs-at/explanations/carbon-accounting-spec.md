@@ -80,7 +80,7 @@ at the `co2 stored` port (positive = capture), `out` = efficiency at the fuel ou
 | **G1 Bio-fuel producer** | `biogas to gas`, `biogas to gas CC`, `BioSNG`, `BioSNG CC`, `biomass to liquid`, `biomass to liquid CC`, `electrobiofuels`, `unsustainable bioliquids`, `biomass-to-methanol`, `biomass-to-methanol CC` | `atm = −EF_out·out (− stored)` | `atm += stored + EF_out·out`; add attribute port (3.3) |
 | **G2 Synthetic fuel producer** | `Fischer-Tropsch`, `Sabatier`, `methanolisation` | no `atm` port; `stored < 0` (input) | no change to `atm`; add attribute port |
 | **G3 Green import** | `import gas`, `import oil`, `import methanol` | `bus0 = co2 atmosphere` | `bus0 → co2 import` (3.4); add attribute port |
-| **C1 Capture** | `DAC`, `SMR CC`, `gas for industry CC`, `urban central gas CHP CC`, `CCGT methanol CC`, `Methanol steam reforming CC`, `allam methanol`, `waste CHP CC`, `process emissions CC`, `solid biomass for industry CC`, `solid biomass to hydrogen`, `urban central solid biomass CHP CC` (plus the CC producers in G1) | `atm` = residual (DAC −1 per t) | `atm += stored` (gross; DAC → 0) |
+| **C1 Capture** | `DAC`, `SMR CC`, `gas for industry CC`, `urban central gas CHP CC`, `CCGT methanol CC`, `Methanol steam reforming CC`, `allam methanol`, `waste CHP CC`, `process emissions CC`, `solid biomass for industry CC`, `solid biomass to hydrogen`, `urban central solid biomass CHP CC` | `atm` = residual (DAC −1 per t) | `atm += stored` (gross; DAC → 0) |
 | **S1 Sequestration** | `co2 sequestered` (`co2 dense` → `co2 sequestered`) | — | add removal attribute port (3.3) |
 | **V1 Vent** | `co2 vent` (not active in CA_base) | `atm = +1` | `atm = 0` |
 | **U Unchanged** | all fuel users (`CCGT`, `OCGT`, boilers, CHP, `SMR`, `gas for industry`, `kerosene for aviation`, `agriculture machinery oil`, `land transport oil`, `shipping oil`, `shipping methanol`, `industry methanol`, `methanol-to-kerosene`, `OCGT/CCGT methanol`, `Methanol steam reforming`, ...), fossil (`coal`, `lignite`, `oil refining`, `nuclear`), `process emissions`, `HVC to air`, `waste CHP`, `municipal solid waste` (D13), transport (`gas pipeline*`, `CO2 pipeline`, `co2 compression`, `co2 expansion`) | | none |
@@ -90,6 +90,16 @@ The general rule for G1, C1 and V1 is
 It is **additive**, so tiny inconsistencies in the cost data stay as they are and P5 holds
 exactly. Residuals measured for 2050: |atm_carrier| ≤ 2·10⁻⁴ t/MWh for G1 (biomass-to-methanol),
 exactly 0 for G2 and C1.
+
+The transformation classes are **disjoint**: every link is transformed once, by its class.
+Capture eligibility for the removal bound (3.3, item 3) is a separate selector,
+`CAPTURE_ELIGIBLE = C1 ∪ {G1 links with a co2 stored port}` (2050: `biogas to gas CC`,
+`BioSNG CC`, `biomass to liquid CC`, `biomass-to-methanol CC`). It doesn't change any
+coefficients.
+
+Capture gets **no immediate credit** under `carrier`. Capture plants book their gross emissions
+(fossil: +EF, biogenic: 0, DAC: 0). The reduction only arises through the removal claim when
+CO2 is sequestered.
 
 Check of P5 per chain (carbon units):
 
@@ -114,18 +124,24 @@ from ordinary PyPSA components, so `n.statistics` and the evals see it without s
 | Component | Name | Bus(es) | Parameters |
 |---|---|---|---|
 | Bus | `{CT} renewable gas attribute` | — | `carrier="renewable gas attribute"`, `unit="MWh"`, `location=CT` |
-| Bus | `EU renewable oil attribute`, `EU renewable methanol attribute` | — | carriers `renewable oil attribute`, `renewable methanol attribute` |
-| Bus | `EU co2 removal attribute` | — | `carrier="co2 removal attribute"`, `unit="t_co2"` |
-| Store | one per attribute bus, same name | attribute bus | `e_nom_extendable=True`, `capital_cost=0`, `e_cyclic=True` |
+| Bus (pool) | `EU renewable oil attribute`, `EU renewable methanol attribute` | — | carriers `renewable oil attribute`, `renewable methanol attribute`, `location=EU` |
+| Bus (pool) | `EU co2 removal attribute` | — | `carrier="co2 removal attribute"`, `unit="t_co2"`, `location=EU` |
+| Bus (country) | `{CT} renewable oil attribute`, `{CT} renewable methanol attribute`, `{CT} co2 removal attribute` | — | same carriers, `location=CT` |
+| Link (distribution) | `EU renewable oil attribute -> {CT}`, and the same for methanol and removals | pool → country bus | `efficiency = 1`, `p_nom = 1e9`, no bound (D3, D15) |
+| Store | one per pool bus and per `{CT} renewable gas attribute`, same name | attribute bus | `e_nom_extendable=True`, `capital_cost=0`, `e_cyclic=True` |
 | Attribute port (G1–G3) | extra port `bus{k}` on the producer link | attribute bus of the producer's country (gas) or EU pool | `efficiency{k} = out` (MWh attribute per MWh fuel) |
 | Removal port (S1) | extra port `bus{k}` on `co2 sequestered` | `EU co2 removal attribute` | `efficiency{k} = 1` (t per t) |
-| Link (claim) | `{CT} renewable gas claim`, `{CT} renewable oil claim`, `{CT} renewable oil claim aviation`, `{CT} renewable methanol claim` | bus0 attribute bus, bus1 `co2 atmosphere` | `efficiency = −EF`, `p_nom = 1e9` |
-| Link (claim) | `{CT} co2 removal claim` | bus0 `EU co2 removal attribute`, bus1 `co2 atmosphere` | `efficiency = −1`, `p_nom = 1e9` |
+| Link (claim) | `{CT} renewable gas claim`, `{CT} renewable oil claim`, `{CT} renewable oil claim aviation`, `{CT} renewable methanol claim` | bus0 `{CT} … attribute` (country bus), bus1 `co2 atmosphere` | `efficiency = −EF`, `p_nom = 1e9` |
+| Link (claim) | `{CT} co2 removal claim` | bus0 `{CT} co2 removal attribute`, bus1 `co2 atmosphere` | `efficiency = −1`, `p_nom = 1e9` |
 | Link (transfer) | `{X} renewable gas attribute -> {Y}` for every pair X≠Y connected by a gas pipeline | `{X} … attribute` → `{Y} … attribute` | `efficiency = 1`, `p_nom = 1e9` |
 | Carriers | the attribute, claim and transfer carriers above, plus `co2 import` | | colours in `config/plotting.at.yaml` |
 
-Claim links exist for every country that has nodes. They carry the country prefix, so
-`co2_budget.py` and `evals` pick them up like any other link at `co2 atmosphere`.
+Claim links exist for every country that has nodes. They carry the country prefix
+(`co2_budget.py` selects links by name). Their bus0 is always a country bus with
+`location=CT`, so `evals/utils.py:get_location`, which goes by bus location and avoids EU,
+assigns them to the country without special handling. That's why pooled credits pass
+through a country bus first. The country buses balance per snapshot via the unbounded
+distribution links, so they need no store.
 Only AT and DE have national budgets; the other countries' claims only matter for retirement (D14).
 
 **Annual constraints** (in `mods/constraints/carbon_accounting.py`). Let w_t be
@@ -146,8 +162,8 @@ Only AT and DE have national budgets; the other countries' claims only matter fo
    directions at once (circulation) to raise the bound. Pipeline losses and compression make
    this costly, and test I4 monitors it.
 3. **Removal claim bound (D9, D15)**, per country CT:
-   `P({CT} co2 removal claim) ≤ Σ_{l ∈ C1, CT} Σ_k efficiency_k(l) · P(l)` over the `co2 stored`
-   ports: the gross CO2 captured in CT (point source + DAC + bio-CC).
+   `P({CT} co2 removal claim) ≤ Σ_{l ∈ CAPTURE_ELIGIBLE, CT} Σ_k efficiency_k(l) · P(l)` over the
+   `co2 stored` ports: the gross CO2 captured in CT (point source + DAC + bio-CC, 3.2).
 4. **Full retirement (D5)** follows from the cyclic attribute stores: over the year,
    attributes generated = attributes claimed. No extra constraint is needed. Attributes cannot
    leave the system any other way (no sink, no vent).
@@ -210,17 +226,24 @@ def apply_carbon_accounting(n: pypsa.Network, snakemake) -> None:
     """Orchestrator: guard on enable/method, then call the steps below in order."""
 
 def drop_accounting_layer(n) -> None:
-    """Remove accounting buses/stores/links copied by add_brownfield (by carrier)."""
+    """Safety net: remove accounting buses/stores/links by carrier if present."""
 
 def add_accounting_layer(n, countries, ef: dict[str, float]) -> None:
-    """Add attribute buses, stores, claim and transfer links, the co2 import bus/generator."""
+    """Add attribute buses, stores, claim, distribution and transfer links, the co2 import bus/generator."""
 
 def transform_emission_ports(n, ef: dict[str, float]) -> None:
-    """Apply the rules of 3.2 to G1, C1, V1. Idempotent: skip links that already have an attribute port."""
+    """Apply the rules of 3.2 to G1, C1, V1. Skips links marked as transformed."""
 
 def add_attribute_ports(n) -> None:
-    """Add the attribute port to G1–G3 and the removal port to S1; re-point G3 bus0."""
+    """Add the attribute port to G1–G3 and the removal port to S1; re-point G3 bus0. Skips marked links."""
 ```
+
+**Transformation marker:** every link changed by `transform_emission_ports` or
+`add_attribute_ports` (G1, G2, G3, C1, S1, V1) gets `n.links["carbon_accounting"] = "carrier"`.
+Links without the marker have NaN. Both functions only touch unmarked links and set the marker at
+the end. This covers capture-only links such as DAC or SMR CC, which have no attribute port.
+Verified: the custom column survives `export_to_netcdf`/`Network(...)`, and `add_brownfield`
+copies all static columns (`n.add(c.name, c.static.index, **c.static)`).
 
 - Called in `mods.modify_prenetwork` (`mods/network/common.py`) as the **last** step before
   `clip_negative_loads_for_edge_cases`, so every link exists, including brownfield links.
@@ -247,20 +270,31 @@ carrier doesn't exist, so the change is a no-op.
 `mods/constants.py`: the carrier lists of 3.2 (`GREEN_BIO_PRODUCERS`, `GREEN_SYNTHETIC_PRODUCERS`,
 `GREEN_IMPORTS`, `CAPTURE`, `SEQUESTRATION`, `VENT`, `FUEL_TRANSPORT`) and the accounting carriers.
 
-`evals/`: the CO2 balance view (`evals/views/balances.py`) shows claim carriers as their own
-categories, plus nice names and colours. For D14, a new view reports per country and fuel:
-claimed green share (claims / consumption) next to the EU-average green share
-(EU green production / EU consumption), and removal claims next to gross capture. Check that attribute buses don't show up in the energy
-balances or the sankey (they have their own bus carriers, so they shouldn't).
+`mods/constants.py`: also `CAPTURE_ELIGIBLE` (3.2) and the marker column name.
+
+`evals/`:
+
+- CO2 balance view (`view_balance_carbon` in `evals/views/balances.py`): claim carriers appear
+  as their own categories, with nice names and colours. The α scaling applies to
+  `kerosene for aviation` **and** `renewable oil claim aviation` (same mask), so the national
+  report matches the constraint.
+- Country attribution follows from the country claim buses (3.3), so `get_location` needs no change.
+- For D14, a new view reports per country and fuel: the claimed green share (claims / consumption)
+  next to the EU-average green share (EU green production / EU consumption), and removal claims
+  next to gross capture.
+- Check that attribute buses don't show up in the energy balances or the sankey. They have their
+  own bus carriers, so they shouldn't.
 
 ### 5.2 Myopic foresight and brownfield
 
 `add_brownfield` copies the links of the previous horizon before `modify_prenetwork` runs.
 
-- Copied G1–G3/C1/S1 links were already transformed. `transform_emission_ports` detects this
-  through the existing attribute port and skips them (no double transformation).
-- Copied accounting components (attribute stores, claim and transfer links) are removed by
-  `drop_accounting_layer` and rebuilt with the current EF.
+- Copied G1–G3/C1/S1/V1 links were already transformed and carry the marker (5.1), so they
+  are skipped (no double transformation).
+- Accounting components are **not** copied: `add_brownfield` drops every component with
+  `lifetime = inf` from the previous network, which is the default for the accounting layer.
+  `drop_accounting_layer` only acts as a safety net. The layer is rebuilt in every horizon with
+  the current EF.
 - Bus names are the same in every horizon, so the attribute ports of copied links stay valid.
 
 ### 5.3 EU CO2 cap
@@ -278,14 +312,15 @@ Unit tests on small synthetic networks (`test/test_mods/network/test_carbon_acco
 |---|---|---|
 | U1 | `method: technology` and `enable: false` | `n.links`, `n.buses`, `n.stores` unchanged |
 | U2 | Rules per class, parametrised over the carriers of 3.2 | `atm` after transformation per the formula; attribute ports present |
-| U3 | Idempotency | running the transformation twice gives the same network |
-| U4 | Brownfield | a copied, already transformed link isn't changed; the accounting layer exists exactly once |
-| U5 | Classification complete | every carrier with a port at a CO2 or fuel bus is in exactly one class |
+| U3 | Idempotency | running the transformation twice gives the same network, explicitly including capture-only links (`DAC`, `SMR CC`) |
+| U4 | Brownfield | copied, already transformed links (G1 and capture-only) keep their coefficients and the marker; the accounting layer exists exactly once |
+| U5 | Classification complete | every carrier with a port at a CO2 or fuel bus is in exactly one transformation class; `CAPTURE_ELIGIBLE` = C1 ∪ G1 links with a `co2 stored` port |
 | U6 | Unknown method | `ValueError` |
 | U7 | Toy solve (HiGHS): 2 countries, biogas in X, consumer in Y, one pipeline | X and Y each book 0; the claim is in Y; P5 holds |
 | U8 | Toy solve: gas transfer bound | without a pipeline flow X→Y, Y can't claim X's attributes |
 | U9 | Toy solve: removal | capture in X, sequestration in Z → credit in X, bounded by X's capture |
-| U10 | Aviation | the `renewable oil claim aviation` contribution in the national LHS is scaled by α |
+| U10 | Aviation | the `renewable oil claim aviation` contribution is scaled by α in the national LHS and in `view_balance_carbon` |
+| U11 | Country attribution | `get_location` returns CT, not EU, for all claim links (gas, oil, methanol, removal) |
 
 Integration tests (`-m AT`, `--result-path=results/carbon-accounting/CA_carrier`):
 
@@ -293,7 +328,7 @@ Integration tests (`-m AT`, `--result-path=results/carbon-accounting/CA_carrier`
 |---|---|---|
 | I1 | P5 | EU sum of weighted flows at `co2 atmosphere` equals the technology equivalent, rebuilt from the inverse rule of 3.2; relative tolerance 1e-6 |
 | I2 | Retirement | the annual net change of every attribute store is 0 |
-| I3 | Sign | only claim links have negative weighted flows into `co2 atmosphere` (G1 residuals ≤ 1e-3 t/MWh tolerated) |
+| I3 | Sign | only claim links and the retained `municipal solid waste` credit (D13) have negative weighted flows into `co2 atmosphere` (G1 residuals ≤ 1e-3 t/MWh tolerated) |
 | I4 | Gas circulation | per border, the smaller of the two directional annual gas flows is reported; a warning above 5 % of the larger one (see 3.3, item 2) |
 | I5 | National budgets | the AT/DE LHS of `co2_limit-*` matches the evals CO2 balance per country |
 
@@ -306,7 +341,8 @@ Each package is one PR with tests and passes `ruff`, the unit tests and a dry ru
 2. **Emission port transformation:** `transform_emission_ports` with idempotency (U2, U3).
 3. **Accounting layer, gas:** attribute buses/stores, ports, claims, transfers, the claim and
    transfer constraints (U7, U8).
-4. **Oil and methanol pool, imports:** EU pools, the aviation split, `co2 import` (U10).
+4. **Oil and methanol pool, imports:** EU pools with country claim buses and distribution links,
+   the aviation split, `co2 import` (U10, U11).
 5. **Removal credits:** the sequestration port, removal claim and bound (U9).
 6. **Brownfield, evals, docs:** `drop_accounting_layer` (U4), the evals views, a section in
    `co2-balancing.md`, a changelog entry; run `CA_technology` and `CA_carrier`, integration tests I1–I5.
@@ -323,7 +359,7 @@ Each package is one PR with tests and passes `ruff`, the unit tests and a dry ru
 | D0c | Permanent removals stay negative | decided |
 | D0d | Scope: method applies to the whole model | decided |
 | D1 | Mass balance granularity: per country | decided |
-| D2 | Removal credit is generated at sequestration; capture and DAC book 0 | decided |
+| D2 | Removal credit is generated at sequestration. Capture gets no immediate credit: capture plants book their gross emissions under the rule of 3.2 (fossil +EF, biogenic and DAC 0) | decided |
 | D3 | Oil/methanol attributes transfer freely (EU pool) | decided |
 | D4 | All bounds are annual | decided |
 | D5 | Full retirement of all attributes | decided |

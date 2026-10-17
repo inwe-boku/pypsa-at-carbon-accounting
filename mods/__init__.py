@@ -6,6 +6,7 @@
 
 from mods.clustering.custom import apply_custom_clustering
 from mods.constants import TYNDP_TO_PYPSA_LOCATION_TRANSMISSION
+from mods.constraints.carbon_accounting import constraint_carbon_accounting
 from mods.constraints.co2_budget import constraint_national_co2_budgets
 from mods.constraints.eag import constraint_net_zero_electricity
 from mods.constraints.production import constraint_production_targets
@@ -28,6 +29,7 @@ __all__ = [
     "apply_annual_demand_overrides",
     "apply_electricity_base_load",
     "apply_industrial_demand_profiles",
+    "constraint_carbon_accounting",
     "constraint_combined_solar_trajectories",
     "constraint_national_co2_budgets",
     "constraint_net_zero_electricity",

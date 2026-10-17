@@ -17,6 +17,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from mods import (
+    constraint_carbon_accounting,
     constraint_combined_solar_trajectories,
     constraint_national_co2_budgets,
     constraint_net_zero_electricity,
@@ -43,6 +44,7 @@ def additional_functionality(n, snapshots, snakemake):
 
     investment_year = int(snakemake.wildcards.horizon)
     constraint_national_co2_budgets(n, snakemake, investment_year)
+    constraint_carbon_accounting(n, snakemake, investment_year)
     constraint_ntc_flow_limits(n, snakemake, investment_year)
     constraint_net_zero_electricity(n, snakemake, investment_year)
     constraint_combined_solar_trajectories(n, snakemake, investment_year)

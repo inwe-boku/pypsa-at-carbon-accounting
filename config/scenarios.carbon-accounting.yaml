@@ -7,4 +7,10 @@
 # carbon accounting variant; keep the reductions of the base config untouched.
 
 CA_base:
-  description: Reduced PyPSA-AT base model (AT10DE5, Gurobi) for carbon accounting comparisons
+  description: Reduced PyPSA-AT base model (AT10DE5, Gurobi), technology-based carbon accounting (status quo)
+
+CA_carrier:
+  description: CA_base with carrier-based carbon accounting (green fuels book zero)
+  mods:
+    carbon_accounting:
+      method: carrier

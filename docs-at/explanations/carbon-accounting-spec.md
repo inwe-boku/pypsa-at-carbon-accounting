@@ -1,7 +1,8 @@
 # Specification: Carbon Accounting Methods
 
-!!! note "Status: ready for implementation"
-    Specification and basis for implementation. AI-assisted draft. Decisions D0–D12 are
+!!! note "Status: implemented"
+    Specification of the implementation in `mods/network/carbon_accounting.py` and
+    `mods/constraints/carbon_accounting.py`. AI-assisted draft. Decisions D0–D16 are
     agreed with the author; team review is pending. Inventory and figures are taken from
     `resources/carbon-accounting/CA_base/networks/composed_{2025,2050}.nc` and
     `results/carbon-accounting/CA_base/networks/solved_2050.nc`.
@@ -11,7 +12,7 @@
 PyPSA-AT gets a switchable carbon accounting method. The chosen method is the
 single standard for the whole model: national CO2 budgets, the EU-wide CO2
 cap, and the reported emissions in `evals/`. Two methods are compared with
-`config/config.carbon-accounting.yaml`:
+`config/config.carbon-accounting.yaml` (scenarios `CA_base` and `CA_carrier`):
 
 | Method | Key | Emissions attached to | Green fuel at creation | Green fuel at use |
 |---|---|---|---|---|
@@ -133,8 +134,9 @@ from ordinary PyPSA components, so `n.statistics` and the evals see it without s
 | Removal port (S1) | extra port `bus{k}` on `co2 sequestered` | `EU co2 removal attribute` | `efficiency{k} = 1` (t per t) |
 | Link (claim) | `{CT} renewable gas claim`, `{CT} renewable oil claim`, `{CT} renewable oil claim aviation`, `{CT} renewable methanol claim` | bus0 `{CT} … attribute` (country bus), bus1 `co2 atmosphere` | `efficiency = −EF`, `p_nom = 1e9` |
 | Link (claim) | `{CT} co2 removal claim` | bus0 `{CT} co2 removal attribute`, bus1 `co2 atmosphere` | `efficiency = −1`, `p_nom = 1e9` |
+| Claim cost (D16) | `marginal_cost` of the claim links of countries with a national budget | | `claim_cost × EF` (`× 1` for removals), i.e. EUR per t credited |
 | Link (transfer) | `{X} renewable gas attribute -> {Y}` for every pair X≠Y connected by a gas pipeline | `{X} … attribute` → `{Y} … attribute` | `efficiency = 1`, `p_nom = 1e9` |
-| Carriers | the attribute, claim and transfer carriers above, plus `co2 import` | | colours in `config/plotting.at.yaml` |
+| Carriers | the attribute, claim and transfer carriers above, `{attribute carrier} distribution` and `renewable gas attribute transfer`, plus `co2 import` | | colours in `config/plotting.at.yaml` |
 
 Claim links exist for every country that has nodes. They carry the country prefix
 (`co2_budget.py` selects links by name). Their bus0 is always a country bus with
@@ -178,6 +180,11 @@ Only AT and DE have national budgets; the other countries' claims only matter fo
     like emission trading between AT and DE. Countries without a national budget don't compete
     for credits (D14, accepted and reported in the evals).
 
+    While no national budget binds, the optimiser is indifferent to who claims. A first run
+    without a tie-break gave AT 28.6 Mt of oil credits in 2025 (1.1 Mt at the EU-average
+    share). Therefore the claims of countries with a national budget carry a small cost
+    (`claim_cost`, D16): they claim only what their budget needs.
+
 ### 3.4 Imports (D10)
 
 Import links keep `p0` in t CO2 (their costs are defined per t). Only bus0 is re-pointed:
@@ -207,13 +214,15 @@ mods:
   carbon_accounting:
     enable: true
     method: technology   # technology | carrier
+    claim_cost: 0.01     # EUR/t CO2 on claims of countries with a national budget (D16)
 ```
 
 - `enable: false` or `method: technology` → the orchestrator returns early. The network is
   bit-identical to today. `technology` is the default in `config.at.yaml` (D6).
 - An unknown `method` raises a `ValueError` (fail early).
-- `config/scenarios.carbon-accounting.yaml`: `CA_technology` (= `CA_base`) and
+- `config/scenarios.carbon-accounting.yaml`: `CA_base` (technology, the reference) and
   `CA_carrier` (`mods.carbon_accounting.method: carrier`), both listed under `run.name`.
+  `CA_base` keeps its name so that existing results stay valid.
 
 ## 5. Implementation design
 
@@ -222,34 +231,53 @@ mods:
 `mods/network/carbon_accounting.py` (compose phase):
 
 ```python
-def apply_carbon_accounting(n: pypsa.Network, snakemake) -> None:
-    """Orchestrator: guard on enable/method, then call the steps below in order."""
+def apply_carbon_accounting(n: pypsa.Network, snakemake, costs: pd.DataFrame) -> None:
+    """Orchestrator: guard on enable/method, check the classification, then call the steps below in order."""
+
 
 def drop_accounting_layer(n) -> None:
     """Safety net: remove accounting buses/stores/links by carrier if present."""
 
-def add_accounting_layer(n, countries, ef: dict[str, float]) -> None:
+
+def add_accounting_layer(n, ef: dict[str, float]) -> None:
     """Add attribute buses, stores, claim, distribution and transfer links, the co2 import bus/generator."""
+
 
 def transform_emission_ports(n, ef: dict[str, float]) -> None:
     """Apply the rules of 3.2 to G1, C1, V1. Skips links marked as transformed."""
 
+
 def add_attribute_ports(n) -> None:
-    """Add the attribute port to G1–G3 and the removal port to S1; re-point G3 bus0. Skips marked links."""
+    """Add the attribute port to G1–G3; re-point G3 bus0. Skips marked links."""
+
+
+def add_removal_ports(n) -> None:
+    """Add the removal port to S1. Skips marked links."""
+
+
+def mark_transformed(n) -> None:
+    """Set the marker on all links of G1–G3, C1, S1, V1."""
+
+
+def price_claims(n, countries: list[str], claim_cost: float) -> None:
+    """Put the claim cost (D16) on the claims of countries with a national budget."""
 ```
 
-**Transformation marker:** every link changed by `transform_emission_ports` or
-`add_attribute_ports` (G1, G2, G3, C1, S1, V1) gets `n.links["carbon_accounting"] = "carrier"`.
-Links without the marker have NaN. Both functions only touch unmarked links and set the marker at
-the end. This covers capture-only links such as DAC or SMR CC, which have no attribute port.
+**Transformation marker:** every link of G1, G2, G3, C1, S1 or V1 gets
+`n.links["carbon_accounting"] = "carrier"` once all steps ran (`mark_transformed`). The
+transformation steps only touch links without this value. Untransformed links hold NaN, which
+becomes an empty string after a netCDF round trip, so the check is `!= "carrier"`. This covers
+capture-only links such as DAC or SMR CC, which have no attribute port.
 Verified: the custom column survives `export_to_netcdf`/`Network(...)`, and `add_brownfield`
 copies all static columns (`n.add(c.name, c.static.index, **c.static)`).
 
 - Called in `mods.modify_prenetwork` (`mods/network/common.py`) as the **last** step before
   `clip_negative_loads_for_edge_cases`, so every link exists, including brownfield links.
 - Port helper: use the next free `bus{k}` index per link; create the columns `bus{k}` and
-  `efficiency{k}` on `n.links` if they're missing.
-- EF from `load_costs(snakemake.input.tech_costs)`, which is already loaded in the orchestrator.
+  `efficiency{k}` on `n.links` if they're missing. Unconnected ports count as efficiency 0:
+  links added by `add_brownfield` hold NaN in extra port columns.
+- Fail early: a link carrier at a CO2 or fuel bus that is in no class raises a `ValueError`.
+- EF from the cost data that `modify_prenetwork` already loaded and passes in.
 
 `mods/constraints/carbon_accounting.py` (solve phase):
 
@@ -279,9 +307,10 @@ carrier doesn't exist, so the change is a no-op.
   `kerosene for aviation` **and** `renewable oil claim aviation` (same mask), so the national
   report matches the constraint.
 - Country attribution follows from the country claim buses (3.3), so `get_location` needs no change.
-- For D14, a new view reports per country and fuel: the claimed green share (claims / consumption)
-  next to the EU-average green share (EU green production / EU consumption), and removal claims
-  next to gross capture.
+- For D14, the view `view_balance_carbon_claims` reports per country and fuel the claimed
+  credits next to the credits at the EU-average green share (EU claims / EU consumption, equal
+  to EU green production with full retirement), and removal claims next to gross capture,
+  all in Mt CO2 (`evals.utils.carbon_accounting_claims`).
 - Check that attribute buses don't show up in the energy balances or the sankey. They have their
   own bus carriers, so they shouldn't.
 
@@ -373,3 +402,4 @@ Each package is one PR with tests and passes `ruff`, the unit tests and a dry ru
 | D13 | The `municipal solid waste` → HVC → `waste CHP`/`HVC to air` chain stays as it is: the credit and the emission arise at the same node, so national results don't change | decided |
 | D14 | No competition for pooled credits is modelled; no fair-share cap. Only AT and DE have national budgets, so they can claim pooled credits up to their own consumption or capture. This mirrors the status quo with the sign flipped: under `technology`, producing green fuels for export is rewarded at home; under `carrier`, consuming them is. This asymmetry is one of the differences the comparison is meant to show, and the evals report it (5.1) | decided |
 | D15 | Removal credits: EU pool, each country claims at most its own gross capture (consistent with the oil/methanol pools). CO2 pipelines are bidirectional, so a per-direction flow bound wouldn't be linear | decided |
+| D16 | Tie-break: claims of countries with a national budget cost `claim_cost` = 0.01 EUR/t, so they claim pooled credits only when their budget needs them. Without it, the split is arbitrary while no budget binds | decided |

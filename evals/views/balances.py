@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 # For license information, see the LICENSE.txt file in the project root.
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -11,11 +12,17 @@ from evals.constants import DataModel as DM
 from evals.fileio import Exporter
 from evals.stats import collect_myopic_statistics
 from evals.utils import (
+    carbon_accounting_claims,
     get_energy_totals_domestic_share,
     get_heat_loss_factor,
+    insert_index_level,
+    rename_aggregate,
+    scale_domestic_aviation,
     split_urban_central_heat_losses_and_consumption,
 )
 from evals.views.common import get_energy_for_heat_production, simple_bus_balance
+
+logger = logging.getLogger(__name__)
 
 
 def view_balance_carbon(
@@ -55,16 +62,50 @@ def view_balance_carbon(
     )
 
     # The domestic aviation factor reduces co2 emissions for aviation per country
-    for ct in energy_totals.index:
-        mask_country = co2_balance.index.get_level_values(DM.LOCATION).str.startswith(
-            ct
-        )
-        mask_carrier = (
-            co2_balance.index.get_level_values(DM.CARRIER) == "kerosene for aviation"
-        )
-        co2_balance.loc[mask_country & mask_carrier] *= domestic_aviation_factors[ct]
+    co2_balance = scale_domestic_aviation(co2_balance, domestic_aviation_factors)
 
     exporter = Exporter(statistics=[co2_balance], view_config=config["view"])
+    exporter.export(result_path, config["global"]["subdir"])
+
+
+def view_balance_carbon_claims(
+    result_path: str | Path,
+    nc: NetworkCollection,
+    config: dict,
+) -> None:
+    """
+    Evaluate and export the CO2 credits claimed per country (carbon accounting).
+
+    Under the carrier-based carbon accounting method, countries claim green
+    fuel and CO2 removal credits up to their own consumption or capture. The
+    view shows the claimed credits next to a reference: the credit at the
+    EU-average green share of each fuel, and the gross CO2 capture for
+    removals. Skipped for the technology-based method, which has no claims.
+
+    Parameters
+    ----------
+    result_path
+        Path where the evaluation results will be saved.
+    nc
+        Collection of solved networks, indexed by year.
+    config
+        Configuration dictionary containing the view settings.
+    """
+    credits = [
+        insert_index_level(carbon_accounting_claims(n), year, DM.YEAR)
+        for year, n in nc.networks.items()
+    ]
+    credits = [c for c in credits if not c.empty]
+    if not credits:
+        logger.info("No carbon accounting claims found, skipping the view.")
+        return
+
+    statistic = pd.concat(credits)
+    statistic = rename_aggregate(
+        statistic, config["view"]["bus_carrier_groups"], level=DM.BUS_CARRIER
+    )
+    statistic.attrs["unit"] = "t_co2"
+    exporter = Exporter(statistics=[statistic], view_config=config["view"])
     exporter.export(result_path, config["global"]["subdir"])
 
 

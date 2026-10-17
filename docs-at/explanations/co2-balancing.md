@@ -24,6 +24,10 @@ solving:
 
 #### Regional Emission Tracking
 
+The rules below describe the default, technology-based carbon accounting
+(`mods.carbon_accounting.method: technology`). The carrier-based alternative is
+described in [Carbon accounting methods](#carbon-accounting-methods).
+
 - Emissions from fuels are balanced in the region where a technology causes the emission
 - E-Fuels vs. Fossil Fuels: Whether E-Fuels (biomethane, synthetic oil, green methanol, etc.) or fossil fuels are burned does not make a difference in emission accounting. All emissions are booked where combustion occurs.
 - Negative emissions from Carbon Capture technologies, Direct Air Capture (DAC), or CCU (e.g., bio-methanol production) are accounted for in the respective technology region
@@ -88,11 +92,70 @@ $$
 
 ❌ **Excluded**
 
-- International aviation
+- International aviation (also the green kerosene claims under the carrier-based method
+  are scaled by $\alpha_c$)
 
 **Key differences from PyPSA-DE**
 
 - Simpler emission tracking: does not distinguish E-Fuels and fossil fuels
+
+### Carbon accounting methods
+
+The configuration key `mods.carbon_accounting.method` decides *where* a green fuel
+counts as green. The choice applies to the whole model: the national CO2 budgets, the
+EU-wide CO2 limit and the CO2 balances in the evaluations.
+
+```yaml
+mods:
+  carbon_accounting:
+    enable: true
+    method: technology   # technology | carrier
+    claim_cost: 0.01     # EUR/t CO2, carrier method only
+```
+
+| | `technology` (default) | `carrier` |
+|---|---|---|
+| Producing biomethane, bio-oil or e-fuels | negative emissions in the producing country | zero |
+| Burning a green fuel | emissions in the burning country, like fossil fuel | zero, if the country claims the green fuel |
+| Burning a fossil fuel | emissions in the burning country | emissions in the burning country |
+| Green fuel imports from outside Europe | negative emissions at the entry point (oil and methanol: no country) | zero in the country that claims them |
+| CO2 captured and stored (CCS, DAC) | negative emissions where the CO2 is captured | the capturing country claims the stored CO2 |
+| CO2 captured and turned into e-fuels (CCU) | negative emissions at the capture plant | no credit; the e-fuel itself counts as green |
+
+**How the carrier method works.** The gas, oil and methanol networks stay as they are:
+green and fossil molecules still mix in the same pipelines and markets. In parallel, every
+MWh of green fuel creates a *green certificate* (an attribute). A country can turn
+certificates into avoided emissions by *claiming* them, at the emission factor of the fuel
+(gas 0.198, oil 0.2571, methanol 0.248 t CO2/MWh). Three rules keep the bookkeeping honest:
+
+1. A country can claim at most as much green fuel as it consumes in the year. Green
+   kerosene is claimed against kerosene for aviation only, and it is scaled with the
+   domestic aviation share, like kerosene itself.
+2. Green gas certificates only travel along the gas pipelines: from one country to the
+   next, at most as much as gas actually flowed across that border in the year.
+   Certificates for oil and methanol, and for stored CO2, are traded freely across Europe.
+3. Every certificate is claimed by the end of the year. The EU-wide CO2 balance is
+   therefore exactly the same as under the technology method; only the split between
+   countries changes.
+
+Stored CO2 is credited to the countries that capture CO2 (point sources, DAC, biogenic
+capture), each at most its own gross capture.
+
+**Who claims what.** Within these limits, the model decides which country claims a
+certificate. Countries with a national CO2 budget (Austria, Germany) claim certificates
+only when their budget needs them: their claims carry a tiny cost (`claim_cost`) that
+breaks the tie in favour of the other countries. Without it, the split between countries
+would be arbitrary whenever no national budget binds. The evaluation
+*Carbon Accounting Claims* shows the claimed credits per country next to the credit it
+would receive at the EU-average green share of each fuel, so that this effect is visible.
+
+**Example.** Austria upgrades 1 TWh of biogas, which is burned in German gas boilers.
+Under `technology`, Austria books −0.198 Mt and Germany +0.198 Mt. Under `carrier`,
+Austria books 0 and Germany books 0.198 Mt for burning the gas and −0.198 Mt for claiming
+its green certificates, so 0 in total. Germany can only make that claim because the gas
+physically flowed from Austria to Germany.
+
+See [Carbon Accounting Methods](carbon-accounting-spec.md) for the full specification.
 
 ### 2. Global CO2 Limit (PyPSA-EUR default)
 

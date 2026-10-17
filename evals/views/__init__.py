@@ -7,6 +7,7 @@
 from evals.views.balances import (
     view_balance_biomass,
     view_balance_carbon,
+    view_balance_carbon_claims,
     view_balance_electricity,
     view_balance_fuels,
     view_balance_heat,
@@ -55,6 +56,7 @@ __all__ = [
     # balances
     "view_balance_electricity",
     "view_balance_carbon",
+    "view_balance_carbon_claims",
     "view_balance_heat",
     "view_balance_hydrogen",
     "view_balance_methane",

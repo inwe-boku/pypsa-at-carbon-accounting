@@ -39,3 +39,19 @@ plotting:
     # fallback for components without carrier. Upstream schema requires hex.
     "": '#000000'
     none: '#000000'
+    # accounting layer of the carrier-based carbon accounting
+    # (mods/network/carbon_accounting.py). Shades of the fuel colours.
+    renewable gas attribute: '#6ab04c'
+    renewable gas attribute transfer: '#6ab04c'
+    renewable gas claim: '#6ab04c'
+    renewable oil attribute: '#e8806b'
+    renewable oil attribute distribution: '#e8806b'
+    renewable oil claim: '#e8806b'
+    renewable oil claim aviation: '#f2b5a8'
+    renewable methanol attribute: '#c7a5d6'
+    renewable methanol attribute distribution: '#c7a5d6'
+    renewable methanol claim: '#c7a5d6'
+    co2 removal attribute: '#5c5c5c'
+    co2 removal attribute distribution: '#5c5c5c'
+    co2 removal claim: '#5c5c5c'
+    co2 import: '#999999'

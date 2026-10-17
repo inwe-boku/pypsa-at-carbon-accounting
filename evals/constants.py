@@ -458,6 +458,12 @@ COLOUR_SCHEME: dict = {
     "CO2 Budget": COLOUR.grey_cool,
     "CO2 Sequestration": COLOUR.grey_silver,
     "CO2 Store": COLOUR.grey_silver,
+    # claims of the carbon accounting method 'carrier'
+    "Renewable Gas Claim": COLOUR.green_light,
+    "Renewable Oil Claim": COLOUR.salmon,
+    "Renewable Kerosene Claim": COLOUR.peach,
+    "Renewable Methanol Claim": COLOUR.rose,
+    "CO2 Removal Claim": COLOUR.grey_charcoal,
     "HVC": COLOUR.blue_moonstone,
     Group.import_foreign: COLOUR.grey_silver,
     Group.export_foreign: COLOUR.grey_silver,
@@ -635,6 +641,18 @@ AVIATION_CARRIERS: tuple[str, ...] = (
     "kerosene for aviation",
     "renewable oil claim aviation",
 )
+
+# claim links of the carrier-based carbon accounting method per fuel bus
+# carrier. Mirrors mods.constants.CLAIM_CARRIERS.
+FUEL_CLAIM_CARRIERS = frozendict(
+    {
+        "renewable gas claim": "gas",
+        "renewable oil claim": "oil",
+        "renewable oil claim aviation": "oil",
+        "renewable methanol claim": "methanol",
+    }
+)
+REMOVAL_CLAIM_CARRIER = "co2 removal claim"
 
 try:
     repo = git.Repo(search_parent_directories=True)

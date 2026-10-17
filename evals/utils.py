@@ -27,7 +27,9 @@ from evals.constants import (
     AVIATION_CARRIERS,
     COLOR_SCHEME_FILL,
     COLOUR_SCHEME,
+    FUEL_CLAIM_CARRIERS,
     LINE_WIDTH,
+    REMOVAL_CLAIM_CARRIER,
     UNITS,
     BusCarrier,
     DataModel,
@@ -1121,6 +1123,108 @@ def scale_domestic_aviation(
     for ct, share in domestic_shares.items():
         scaled.loc[locations.str.startswith(ct) & is_aviation] *= share
     return scaled
+
+
+def _link_ports(n: pypsa.Network) -> list[str]:
+    ports = n.links.columns[n.links.columns.str.fullmatch(r"bus\d+")].str[3:]
+    return sorted(ports, key=int)
+
+
+def _claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
+    """
+    Return the annual consumption that bounds each claim, per country.
+
+    Mirrors ``mods.constraints.carbon_accounting.claimable_consumers``.
+    """
+    links = n.links
+    fuel = links.bus0.map(n.buses.carrier)
+    transport = links.carrier.isin(["gas pipeline", "gas pipeline new"])
+    aviation = links.carrier == "kerosene for aviation"
+    consumption = {}
+    for claim, claimed_fuel in FUEL_CLAIM_CARRIERS.items():
+        is_claim = (fuel == claimed_fuel) & ~transport
+        if claimed_fuel == "oil":
+            is_claim &= aviation if claim.endswith("aviation") else ~aviation
+        consumers = links.index[is_claim]
+        consumption[claim] = p0[consumers].groupby(consumers.str[:2]).sum()
+    return pd.DataFrame(consumption).fillna(0.0)
+
+
+def _gross_capture(n: pypsa.Network, p0: pd.Series) -> pd.Series:
+    """Return the annual CO2 captured into ``co2 stored`` per country."""
+    transport = n.links.carrier.isin(["co2 expansion", "CO2 pipeline"])
+    captured = pd.Series(0.0, index=n.links.index)
+    for port in _link_ports(n)[1:]:
+        to_store = n.links[f"bus{port}"].map(n.buses.carrier) == "co2 stored"
+        column = "efficiency" if port == "1" else f"efficiency{port}"
+        efficiency = n.links[column].where(to_store & ~transport, 0.0).fillna(0.0)
+        captured += efficiency.clip(lower=0.0) * p0
+    return captured.groupby(captured.index.str[:2]).sum()
+
+
+def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
+    """
+    Compare the claimed CO2 credits of each country with a reference.
+
+    Under the carrier-based carbon accounting, countries claim green fuel
+    and removal credits up to their own consumption or capture (D14). The
+    reference for a fuel is the credit at the EU-average green share of
+    that fuel, for removals it is the gross capture of the country.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+
+    Returns
+    -------
+    :
+        Credits in t CO2, positive, indexed by ``location`` (country),
+        ``carrier`` (the claim) and ``bus_carrier`` (``claimed`` or
+        ``reference``). Empty without claim links.
+    """
+    weightings = n.snapshot_weightings.generators
+    p0 = n.links_t.p0.mul(weightings, axis=0).sum().reindex(n.links.index, fill_value=0)
+    claim_carriers = [*FUEL_CLAIM_CARRIERS, REMOVAL_CLAIM_CARRIER]
+    claims = n.links[n.links.carrier.isin(claim_carriers)]
+    names = pd.MultiIndex.from_arrays([[], [], []], names=DataModel.IDX_NAMES)
+    if claims.empty:
+        return pd.Series(dtype=float, index=names)
+
+    keys = pd.MultiIndex.from_arrays(
+        [claims.index.str[:2], claims.carrier], names=DataModel.IDX_NAMES[:2]
+    )
+    factor = pd.Series(-claims.efficiency.to_numpy(), index=keys)
+    claimed = pd.Series(p0[claims.index].to_numpy(), index=keys)
+
+    consumption = _claimable_consumption(n, p0).stack()
+    consumption.index.names = DataModel.IDX_NAMES[:2]
+    fuel = consumption.index.get_level_values(DataModel.CARRIER).map(
+        FUEL_CLAIM_CARRIERS
+    )
+    is_removal = (
+        claimed.index.get_level_values(DataModel.CARRIER) == REMOVAL_CLAIM_CARRIER
+    )
+    claimed_fuel = claimed[~is_removal]
+    claimed_fuel = claimed_fuel.reindex(consumption.index, fill_value=0.0)
+    share = claimed_fuel.groupby(fuel.to_numpy()).sum() / consumption.groupby(
+        fuel.to_numpy()
+    ).sum().replace(0.0, float("nan"))
+    reference = consumption * fuel.map(share).fillna(0.0).to_numpy()
+
+    capture = _gross_capture(n, p0)
+    capture.index = pd.MultiIndex.from_arrays(
+        [capture.index, [REMOVAL_CLAIM_CARRIER] * len(capture)],
+        names=DataModel.IDX_NAMES[:2],
+    )
+    reference = pd.concat([reference * factor.reindex(reference.index), capture])
+    credits = pd.concat(
+        {"claimed": claimed * factor, "reference": reference.dropna()},
+        names=[DataModel.BUS_CARRIER],
+    )
+    credits = credits.reorder_levels(DataModel.IDX_NAMES).sort_index()
+    credits.attrs["unit"] = "t_co2"
+    return credits
 
 
 def build_plot_config(global_cfg: dict) -> SimpleNamespace:

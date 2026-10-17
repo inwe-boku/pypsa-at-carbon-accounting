@@ -16,6 +16,7 @@ from evals.plots.components import (
 from evals.plots.timeseries import ESMTimeSeriesChart
 from evals.utils import (
     apply_cutoff,
+    carbon_accounting_claims,
     custom_sort,
     filter_by,
     get_trade_type,
@@ -28,6 +29,14 @@ from evals.utils import (
     split_location_carrier,
     to_duration_curve,
     trade_mask,
+)
+from mods.constraints.carbon_accounting import constraint_carbon_accounting
+from mods.network.carbon_accounting import apply_carbon_accounting
+from test.test_mods.conftest import (
+    build_gas_toy,
+    build_oil_toy,
+    carbon_accounting_costs,
+    carbon_accounting_snakemake,
 )
 
 
@@ -1252,3 +1261,44 @@ def test_scale_domestic_aviation():
     shares = pd.Series({"AT": 0.25, "DE": 0.5})
     scaled = scale_domestic_aviation(balance, shares)
     assert scaled["2050"].tolist() == [1.0, -0.5, -1.0, 4.0]
+
+
+class TestCarbonAccountingClaims:
+    """D14: claimed credits next to the EU-average share and gross capture."""
+
+    @pytest.fixture(scope="class")
+    def credits(self) -> pd.Series:
+        n = build_oil_toy()
+        snakemake = carbon_accounting_snakemake()
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        # all green oil is claimed in DE
+        n.links.loc["DE renewable oil claim", "marginal_cost"] = -1.0
+        n.optimize(
+            solver_name="highs",
+            extra_functionality=lambda n, _: constraint_carbon_accounting(
+                n, snakemake, 2050
+            ),
+        )
+        return carbon_accounting_claims(n)
+
+    def test_claimed(self, credits):
+        claimed = credits.xs("claimed", level=DataModel.BUS_CARRIER)
+        assert claimed[("DE", "renewable oil claim")] == pytest.approx(20 * 0.2571)
+        assert claimed[("AT", "renewable oil claim")] == pytest.approx(0.0, abs=1e-6)
+
+    def test_reference_is_eu_average_share(self, credits):
+        reference = credits.xs("reference", level=DataModel.BUS_CARRIER)
+        # 20 MWh green oil, 40 MWh consumed: both countries get half of their use
+        for ct in ("AT", "DE"):
+            assert reference[(ct, "renewable oil claim")] == pytest.approx(10 * 0.2571)
+        assert reference[("DE", "renewable gas claim")] == pytest.approx(20 * 0.198)
+
+    def test_unit(self, credits):
+        assert credits.attrs["unit"] == "t_co2"
+        assert credits.ge(-1e-9).all()
+
+
+def test_carbon_accounting_claims_empty_without_claims():
+    n = build_gas_toy()
+    n.optimize(solver_name="highs")
+    assert carbon_accounting_claims(n).empty

@@ -13,6 +13,7 @@ from evals.stats import collect_myopic_statistics
 from evals.utils import (
     get_energy_totals_domestic_share,
     get_heat_loss_factor,
+    scale_domestic_aviation,
     split_urban_central_heat_losses_and_consumption,
 )
 from evals.views.common import get_energy_for_heat_production, simple_bus_balance
@@ -55,14 +56,7 @@ def view_balance_carbon(
     )
 
     # The domestic aviation factor reduces co2 emissions for aviation per country
-    for ct in energy_totals.index:
-        mask_country = co2_balance.index.get_level_values(DM.LOCATION).str.startswith(
-            ct
-        )
-        mask_carrier = (
-            co2_balance.index.get_level_values(DM.CARRIER) == "kerosene for aviation"
-        )
-        co2_balance.loc[mask_country & mask_carrier] *= domestic_aviation_factors[ct]
+    co2_balance = scale_domestic_aviation(co2_balance, domestic_aviation_factors)
 
     exporter = Exporter(statistics=[co2_balance], view_config=config["view"])
     exporter.export(result_path, config["global"]["subdir"])

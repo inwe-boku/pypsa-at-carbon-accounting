@@ -24,6 +24,7 @@ from evals.constants import (
     ALIAS_REGION_AT35_CLUSTERING,
     ALIAS_REGION_DE5_CLUSTERING,
     ALIAS_REGION_DE16_CLUSTERING,
+    AVIATION_CARRIERS,
     COLOR_SCHEME_FILL,
     COLOUR_SCHEME,
     LINE_WIDTH,
@@ -1089,6 +1090,37 @@ def get_energy_totals_domestic_share(
     domestic = energy_totals[f"total domestic {kind}"]
     international = energy_totals[f"total international {kind}"]
     return domestic / (domestic + international)
+
+
+def scale_domestic_aviation(
+    co2_balance: pd.DataFrame, domestic_shares: pd.Series
+) -> pd.DataFrame:
+    """
+    Scale aviation CO2 with the domestic aviation share per country.
+
+    Scales kerosene emissions and, under the carrier-based carbon accounting,
+    the green kerosene claims alike, as the national CO2 budget does.
+
+    Parameters
+    ----------
+    co2_balance
+        CO2 balance with ``location`` and ``carrier`` index levels.
+    domestic_shares
+        Domestic share of aviation per country code.
+
+    Returns
+    -------
+    :
+        A copy of the balance with scaled aviation rows.
+    """
+    scaled = co2_balance.copy()
+    locations = scaled.index.get_level_values(DataModel.LOCATION)
+    is_aviation = scaled.index.get_level_values(DataModel.CARRIER).isin(
+        AVIATION_CARRIERS
+    )
+    for ct, share in domestic_shares.items():
+        scaled.loc[locations.str.startswith(ct) & is_aviation] *= share
+    return scaled
 
 
 def build_plot_config(global_cfg: dict) -> SimpleNamespace:

@@ -628,6 +628,14 @@ ALIAS_LOCATION_REV = frozendict(
     }
 )
 
+# links whose CO2 is scaled with the domestic aviation share: kerosene and the
+# green kerosene claims of the carrier-based carbon accounting method. Mirrors
+# mods.constants.AVIATION_CARRIERS (evals do not import mods).
+AVIATION_CARRIERS: tuple[str, ...] = (
+    "kerosene for aviation",
+    "renewable oil claim aviation",
+)
+
 try:
     repo = git.Repo(search_parent_directories=True)
     branch = repo.active_branch.name

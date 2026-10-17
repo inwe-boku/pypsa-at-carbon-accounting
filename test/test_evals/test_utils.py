@@ -24,6 +24,7 @@ from evals.utils import (
     prettify_number,
     rename_aggregate,
     scale,
+    scale_domestic_aviation,
     split_location_carrier,
     to_duration_curve,
     trade_mask,
@@ -1234,3 +1235,20 @@ def test_time_series_styler_style_axes_and_layout(minimal_ts_cfg):
     assert fig.layout.yaxis.title.text == "MWh"
     assert fig.layout.yaxis.gridcolor == "gainsboro"
     assert fig.layout.xaxis.ticklabelmode == "period"
+
+
+def test_scale_domestic_aviation():
+    """U10: kerosene and green kerosene claims scale with the domestic share."""
+    index = pd.MultiIndex.from_tuples(
+        [
+            ("AT11", "kerosene for aviation"),
+            ("AT", "renewable oil claim aviation"),
+            ("AT", "renewable oil claim"),
+            ("DE1", "kerosene for aviation"),
+        ],
+        names=[DataModel.LOCATION, DataModel.CARRIER],
+    )
+    balance = pd.DataFrame({"2050": [4.0, -2.0, -1.0, 8.0]}, index=index)
+    shares = pd.Series({"AT": 0.25, "DE": 0.5})
+    scaled = scale_domestic_aviation(balance, shares)
+    assert scaled["2050"].tolist() == [1.0, -0.5, -1.0, 4.0]

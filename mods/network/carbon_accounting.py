@@ -28,6 +28,7 @@ from mods.constants import (
     CLAIM_CARRIERS,
     CO2_BUS_CARRIERS,
     CO2_IMPORT,
+    DISTRIBUTION_CARRIERS,
     FUEL_TRANSPORT,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
@@ -84,7 +85,18 @@ TRANSFORMED_CLASSES: tuple[str, ...] = ("G1", "G2", "G3", "C1", "S1", "V1")
 ATMOSPHERE = "co2 atmosphere"
 # capacity of the accounting links, large enough to never bind
 UNBOUNDED = 1e9
-ACCOUNTING_LINK_CARRIERS: tuple[str, ...] = (*CLAIM_CARRIERS.values(), TRANSFER_CARRIER)
+ACCOUNTING_LINK_CARRIERS: tuple[str, ...] = (
+    *CLAIM_CARRIERS.values(),
+    TRANSFER_CARRIER,
+    *DISTRIBUTION_CARRIERS.values(),
+)
+# claims per attribute kind, ``EU`` is the pool of the pooled kinds
+CLAIMS: dict[str, tuple[str, ...]] = {
+    "gas": ("gas",),
+    "oil": ("oil", "oil aviation"),
+    "methanol": ("methanol",),
+}
+POOL = "EU"
 
 
 def attribute_bus(country: str, kind: str) -> str:
@@ -373,6 +385,37 @@ def drop_accounting_layer(n: pypsa.Network) -> None:
         n.remove(c, static.index[static.carrier.isin(carriers)])
 
 
+def _add_pooled_layer(n: pypsa.Network, kind: str, factor: float) -> None:
+    """
+    Add an EU attribute pool that feeds a claim bus in every country (D3).
+
+    Attributes of the pool are distributed freely, so each country claims
+    from its own bus. The country buses carry the country location, which
+    the evals use to attribute the claims.
+    """
+    cts = countries(n)
+    pool = attribute_bus(POOL, kind)
+    _add_attribute_buses(n, [pool], kind, [POOL], unit=_unit(kind))
+    _add_attribute_stores(n, [pool], kind)
+
+    buses = [attribute_bus(ct, kind) for ct in cts]
+    _add_attribute_buses(n, buses, kind, cts, unit=_unit(kind))
+    n.add(
+        "Link",
+        [f"{pool} -> {ct}" for ct in cts],
+        bus0=pool,
+        bus1=buses,
+        carrier=DISTRIBUTION_CARRIERS[kind],
+        p_nom=UNBOUNDED,
+    )
+    for claim in CLAIMS[kind]:
+        _add_claim_links(n, cts, claim, kind, factor)
+
+
+def _unit(kind: str) -> str:
+    return "t_co2" if kind == "removal" else "MWh"
+
+
 def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
     """
     Add the accounting layer of the carrier-based method (spec section 3.3).
@@ -390,6 +433,8 @@ def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
         Modifies the network in place.
     """
     _add_gas_layer(n, ef)
+    for fuel in ("oil", "methanol"):
+        _add_pooled_layer(n, fuel, ef[fuel])
 
     # green imports draw their carbon from a virtual source instead of the
     # atmosphere (section 3.4)
@@ -422,7 +467,8 @@ def add_attribute_ports(n: pypsa.Network) -> None:
     Connect green fuel producers to the attribute bus of their output.
 
     Each unmarked link of the classes G1-G3 gets one attribute per MWh of
-    green fuel. Gas attributes go to the country of the gas bus they feed.
+    green fuel. Gas attributes go to the country of the gas bus they feed,
+    oil and methanol attributes to the EU pool.
     Green imports take their carbon from the ``co2 import`` bus instead of
     the atmosphere.
 
@@ -440,9 +486,13 @@ def add_attribute_ports(n: pypsa.Network) -> None:
     imports = out.index[n.links.loc[out.index, "carrier"].isin(GREEN_IMPORTS)]
     n.links.loc[imports, "bus0"] = CO2_IMPORT
 
-    gas = out[out.fuel == "gas"]
-    bus = bus_country(n, gas.bus).map(lambda ct: attribute_bus(ct, "gas"))
-    add_link_port(n, gas.index, bus, gas.efficiency)
+    country = bus_country(n, out.bus).where(out.fuel == "gas", POOL)
+    bus = pd.Series(
+        [attribute_bus(ct, fuel) for ct, fuel in zip(country, out.fuel)],
+        index=out.index,
+        dtype=object,
+    )
+    add_link_port(n, out.index, bus, out.efficiency)
 
 
 def mark_transformed(n: pypsa.Network) -> None:

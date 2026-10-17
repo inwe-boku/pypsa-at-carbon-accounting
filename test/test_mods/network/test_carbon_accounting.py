@@ -9,6 +9,7 @@ from itertools import combinations
 import pandas as pd
 import pytest
 
+from evals.utils import get_location
 from mods.constants import (
     CAPTURE,
     CAPTURE_ELIGIBLE,
@@ -260,3 +261,71 @@ class TestGasLayer:
     def test_import_draws_from_virtual_source(self, n):
         assert n.links.at["AT1 gas import", "bus0"] == "co2 import"
         assert n.generators.at["co2 import", "bus"] == "co2 import"
+
+
+class TestPooledLayer:
+    """Section 3.3: the EU pools of oil and methanol attributes."""
+
+    @pytest.fixture
+    def n(self, carbon_network):
+        _apply(carbon_network)
+        return carbon_network
+
+    @pytest.mark.parametrize("fuel", ["oil", "methanol"])
+    def test_pool_feeds_every_country(self, n, fuel):
+        pool = f"EU renewable {fuel} attribute"
+        assert n.buses.at[pool, "location"] == "EU"
+        assert n.stores.at[pool, "e_cyclic"]
+        for ct in ("AT", "DE"):
+            link = n.links.loc[f"{pool} -> {ct}"]
+            assert (link.bus0, link.bus1) == (pool, f"{ct} renewable {fuel} attribute")
+            assert n.buses.at[link.bus1, "location"] == ct
+
+    @pytest.mark.parametrize(
+        ("claim", "bus", "factor"),
+        [
+            ("renewable oil claim", "renewable oil attribute", EF["oil"]),
+            ("renewable oil claim aviation", "renewable oil attribute", EF["oil"]),
+            (
+                "renewable methanol claim",
+                "renewable methanol attribute",
+                EF["methanol"],
+            ),
+        ],
+    )
+    def test_claim_links(self, n, claim, bus, factor):
+        link = n.links.loc[f"AT {claim}"]
+        assert (link.bus0, link.bus1) == (f"AT {bus}", "co2 atmosphere")
+        assert link.efficiency == -factor
+
+    @pytest.mark.parametrize(
+        ("link", "bus", "efficiency"),
+        [
+            ("AT1 biomass to liquid", "EU renewable oil attribute", 0.45),
+            ("AT1 Fischer-Tropsch", "EU renewable oil attribute", 0.734),
+            ("AT1 biomass-to-methanol", "EU renewable methanol attribute", 0.65),
+            ("EU oil import", "EU renewable oil attribute", 1 / EF["oil"]),
+            (
+                "EU methanol import",
+                "EU renewable methanol attribute",
+                1 / EF["methanol"],
+            ),
+        ],
+    )
+    def test_attribute_ports(self, n, link, bus, efficiency):
+        assert _port_to(n, link, bus) == pytest.approx(efficiency)
+
+    @pytest.mark.parametrize("link", ["EU oil import", "EU methanol import"])
+    def test_imports_draw_from_virtual_source(self, n, link):
+        assert n.links.at[link, "bus0"] == "co2 import"
+
+
+def test_claims_are_located_in_their_country(carbon_network):
+    """U11: the evals attribute every claim link to its country, not to EU."""
+    _apply(carbon_network)
+    location = get_location(carbon_network, "Link")
+    claims = carbon_network.links.index[
+        carbon_network.links.carrier.str.contains(" claim")
+    ]
+    assert not claims.empty
+    assert (location[claims] == claims.str[:2]).all()

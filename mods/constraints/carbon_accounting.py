@@ -16,9 +16,9 @@ import pandas as pd
 import pypsa
 from linopy import LinearExpression
 
-from mods.constants import FUEL_TRANSPORT
+from mods.constants import CLAIM_CARRIERS, FUEL_TRANSPORT
 from mods.network.carbon_accounting import (
-    bus_country,
+    CLAIMS,
     carbon_accounting_method,
     claim_link,
     gas_borders,
@@ -76,15 +76,45 @@ def fuel_consumers(n: pypsa.Network, ct: str, fuel: str) -> pd.Index:
     return links.index[consumes & in_country & ~links.carrier.isin(FUEL_TRANSPORT)]
 
 
+def claimable_consumers(n: pypsa.Network, ct: str, claim: str) -> pd.Index:
+    """
+    Return the links whose consumption bounds a claim of a country.
+
+    Aviation claims are bounded by ``kerosene for aviation`` alone, the other
+    oil claims by all other oil consumption.
+
+    Parameters
+    ----------
+    n
+        The network.
+    ct
+        Country code.
+    claim
+        Claim kind, a key of :data:`mods.constants.CLAIM_CARRIERS`.
+
+    Returns
+    -------
+    :
+        The consuming links.
+    """
+    fuel = claim.split()[0]
+    consumers = fuel_consumers(n, ct, fuel)
+    if fuel != "oil":
+        return consumers
+    aviation = n.links.loc[consumers, "carrier"] == "kerosene for aviation"
+    return consumers[aviation] if claim == "oil aviation" else consumers[~aviation]
+
+
 def _add_claim_bounds(n: pypsa.Network) -> None:
     """Bound the claims of each country by its consumption (D4, D7)."""
-    claims = n.links.index[n.links.carrier == "renewable gas claim"]
-    for ct in bus_country(n, n.links.loc[claims, "bus0"]):
-        consumers = fuel_consumers(n, ct, "gas")
-        lhs = annual_flow(n, pd.Index([claim_link(ct, "gas")])) - annual_flow(
-            n, consumers
-        )
-        n.model.add_constraints(lhs <= 0, name=f"carbon_accounting-claim-{ct}-gas")
+    for claim in (c for claims in CLAIMS.values() for c in claims):
+        links = n.links.index[n.links.carrier == CLAIM_CARRIERS[claim]]
+        for ct in links.str[:2]:
+            lhs = annual_flow(n, pd.Index([claim_link(ct, claim)])) - annual_flow(
+                n, claimable_consumers(n, ct, claim)
+            )
+            name = f"carbon_accounting-claim-{ct}-{claim.replace(' ', '-')}"
+            n.model.add_constraints(lhs <= 0, name=name)
 
 
 def _add_transfer_bounds(n: pypsa.Network) -> None:

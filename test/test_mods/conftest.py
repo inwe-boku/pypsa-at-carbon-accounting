@@ -205,3 +205,86 @@ def build_carbon_network(nodes: tuple[str, ...] = ("AT1", "DE1")) -> pypsa.Netwo
 def carbon_network() -> pypsa.Network:
     """Return a fresh synthetic network for the carbon accounting tests."""
     return build_carbon_network()
+
+
+def build_gas_toy(
+    consumer_in_origin: bool = False, pipeline_capacity: float = 100.0
+) -> pypsa.Network:
+    """
+    Build a solvable two-country gas network: biogas in AT, consumers in DE.
+
+    AT1 upgrades 10 MW of biogas into its gas bus. DE1 burns gas in a boiler
+    for a 10 MW heat load and can buy fossil gas. A pipeline connects AT1 to
+    DE1. Emissions go to an unbounded ``co2 atmosphere`` store.
+
+    Parameters
+    ----------
+    consumer_in_origin
+        Add the same boiler, heat load and fossil gas supply to AT1.
+    pipeline_capacity
+        Capacity of the pipeline from AT1 to DE1.
+
+    Returns
+    -------
+    :
+        The network with two snapshots of weight 1.
+    """
+    n = pypsa.Network()
+    n.set_snapshots(range(2))
+    n.add("Bus", "co2 atmosphere", carrier="co2", location="EU", unit="t_co2")
+    n.add(
+        "Store",
+        "co2 atmosphere",
+        bus="co2 atmosphere",
+        carrier="co2",
+        e_nom_extendable=True,
+        e_min_pu=-1,
+    )
+    n.add("Bus", "EU oil", carrier="oil", location="EU")
+    n.add("Bus", "EU methanol", carrier="methanol", location="EU")
+    for node in ("AT1", "DE1"):
+        for suffix, carrier in [("", "AC"), (" gas", "gas"), (" heat", "heat")]:
+            n.add("Bus", f"{node}{suffix}", carrier=carrier, location=node)
+
+    n.add("Bus", "AT1 biogas", carrier="biogas", location="AT1")
+    n.add("Generator", "AT1 biogas", bus="AT1 biogas", carrier="biogas", p_nom=10)
+    n.add(
+        "Link",
+        "AT1 biogas to gas",
+        carrier="biogas to gas",
+        bus0="AT1 biogas",
+        bus1="AT1 gas",
+        bus2="co2 atmosphere",
+        efficiency2=-EF["gas"],
+        p_nom=10,
+        p_min_pu=1,
+    )
+    n.add(
+        "Link",
+        "gas pipeline AT1 -> DE1",
+        carrier="gas pipeline",
+        bus0="AT1 gas",
+        bus1="DE1 gas",
+        p_nom=pipeline_capacity,
+    )
+    for node in ("AT1", "DE1") if consumer_in_origin else ("DE1",):
+        n.add(
+            "Generator",
+            f"{node} gas",
+            bus=f"{node} gas",
+            carrier="gas",
+            p_nom=100,
+            marginal_cost=50,
+        )
+        n.add(
+            "Link",
+            f"{node} rural gas boiler",
+            carrier="rural gas boiler",
+            bus0=f"{node} gas",
+            bus1=f"{node} heat",
+            bus2="co2 atmosphere",
+            efficiency2=EF["gas"],
+            p_nom=100,
+        )
+        n.add("Load", f"{node} heat", bus=f"{node} heat", p_set=10)
+    return n

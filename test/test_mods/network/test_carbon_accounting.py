@@ -167,12 +167,22 @@ class TestEmissionPorts:
         assert pd.isna(marker["AT1 CCGT"])
 
 
+def _normalised(links: pd.DataFrame) -> pd.DataFrame:
+    """Fill unconnected extra ports, which re-added links leave as NaN."""
+    out = links.astype(object)
+    for col in out.columns[out.columns.str.fullmatch(r"bus\d+")]:
+        out[col] = out[col].fillna("")
+    for col in out.columns[out.columns.str.fullmatch(r"efficiency\d+")]:
+        out[col] = out[col].fillna(1.0)
+    return out
+
+
 def test_idempotent(carbon_network):
     """U3: a second run changes nothing, including capture-only links."""
     _apply(carbon_network)
-    once = carbon_network.links.copy()
+    once = _normalised(carbon_network.links)
     _apply(carbon_network)
-    assert carbon_network.links.equals(once)
+    assert _normalised(carbon_network.links).equals(once)
     assert _atmosphere(carbon_network)[["AT1 DAC", "AT1 SMR CC"]].tolist() == [
         0.0,
         pytest.approx(0.198),
@@ -195,3 +205,58 @@ def test_solved_networks_gross_emissions(nc):
         assert (atm[dac] == 0).all()
         capture = m.links.carrier.isin(CAPTURE)
         assert (atm[capture] >= 0).all()
+
+
+def _port_to(n, link: str, bus: str) -> float:
+    """Return the efficiency of the port of a link at a bus."""
+    for port in link_ports(n):
+        if n.links.at[link, f"bus{port}"] == bus:
+            return port_efficiency(n, port)[link]
+    raise KeyError(f"{link} has no port at {bus}")
+
+
+class TestGasLayer:
+    """Section 3.3: the gas accounting layer."""
+
+    @pytest.fixture
+    def n(self, carbon_network):
+        _apply(carbon_network)
+        return carbon_network
+
+    def test_attribute_buses(self, n):
+        buses = n.buses.loc[
+            ["AT renewable gas attribute", "DE renewable gas attribute"]
+        ]
+        assert buses.carrier.eq("renewable gas attribute").all()
+        assert buses.location.tolist() == ["AT", "DE"]
+
+    def test_attribute_stores_are_cyclic(self, n):
+        store = n.stores.loc["AT renewable gas attribute"]
+        assert store.e_cyclic
+        assert store.e_nom_extendable
+
+    def test_claim_links(self, n):
+        claim = n.links.loc["DE renewable gas claim"]
+        assert claim.bus0 == "DE renewable gas attribute"
+        assert claim.bus1 == "co2 atmosphere"
+        assert claim.efficiency == -EF["gas"]
+
+    def test_transfer_follows_pipelines(self, n):
+        transfers = n.links.index[n.links.carrier == "renewable gas attribute transfer"]
+        assert transfers.tolist() == ["AT renewable gas attribute -> DE"]
+
+    @pytest.mark.parametrize(
+        ("link", "efficiency"),
+        [
+            ("DE1 biogas to gas", 1.0),
+            ("DE1 Sabatier", 0.8),
+            ("AT1 gas import", 1 / EF["gas"]),
+        ],
+    )
+    def test_attribute_ports(self, n, link, efficiency):
+        bus = f"{link[:2]} renewable gas attribute"
+        assert _port_to(n, link, bus) == pytest.approx(efficiency)
+
+    def test_import_draws_from_virtual_source(self, n):
+        assert n.links.at["AT1 gas import", "bus0"] == "co2 import"
+        assert n.generators.at["co2 import", "bus"] == "co2 import"

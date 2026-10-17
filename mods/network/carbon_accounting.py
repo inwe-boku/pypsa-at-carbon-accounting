@@ -21,14 +21,19 @@ from snakemake.script import Snakemake
 
 from mods.constants import (
     ACCOUNTING_FUELS,
+    ATTRIBUTE_CARRIERS,
     CAPTURE,
     CARBON_ACCOUNTING_MARKER,
     CARBON_ACCOUNTING_METHODS,
+    CLAIM_CARRIERS,
     CO2_BUS_CARRIERS,
+    CO2_IMPORT,
+    FUEL_TRANSPORT,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
     GREEN_SYNTHETIC_PRODUCERS,
     SEQUESTRATION,
+    TRANSFER_CARRIER,
     UNCHANGED,
     VENT,
 )
@@ -77,6 +82,30 @@ def carbon_accounting_method(config: dict) -> str | None:
 # classes whose links get the carbon accounting marker
 TRANSFORMED_CLASSES: tuple[str, ...] = ("G1", "G2", "G3", "C1", "S1", "V1")
 ATMOSPHERE = "co2 atmosphere"
+# capacity of the accounting links, large enough to never bind
+UNBOUNDED = 1e9
+ACCOUNTING_LINK_CARRIERS: tuple[str, ...] = (*CLAIM_CARRIERS.values(), TRANSFER_CARRIER)
+
+
+def attribute_bus(country: str, kind: str) -> str:
+    """Return the name of the attribute bus of a country, e.g. ``AT renewable gas attribute``."""
+    return f"{country} {ATTRIBUTE_CARRIERS[kind]}"
+
+
+def claim_link(country: str, kind: str) -> str:
+    """Return the name of a claim link, e.g. ``AT renewable oil claim aviation``."""
+    return f"{country} {CLAIM_CARRIERS[kind]}"
+
+
+def bus_country(n: pypsa.Network, buses: pd.Series) -> pd.Series:
+    """Return the country code of buses, from the first two characters of their location."""
+    return buses.map(n.buses.location).str[:2]
+
+
+def countries(n: pypsa.Network, carrier: str = "AC") -> list[str]:
+    """Return the sorted country codes of all buses of a carrier."""
+    buses = n.buses.index[n.buses.carrier == carrier].to_series()
+    return sorted(bus_country(n, buses).unique())
 
 
 def emission_factors(costs: pd.DataFrame) -> dict[str, float]:
@@ -146,6 +175,8 @@ def add_link_port(
     :
         Modifies the network in place.
     """
+    if idx.empty:
+        return
     used = pd.DataFrame(
         {int(p): n.links.loc[idx, f"bus{p}"].fillna("") != "" for p in link_ports(n)}
     )
@@ -225,6 +256,195 @@ def transform_emission_ports(n: pypsa.Network, ef: dict[str, float]) -> None:
     )
 
 
+def _add_attribute_buses(
+    n: pypsa.Network, names: list[str], kind: str, locations: list[str], unit: str
+) -> None:
+    """Add attribute buses, placed at the centre of their country's nodes."""
+    nodes = n.buses[n.buses.carrier == "AC"]
+    centre = nodes[["x", "y"]].groupby(bus_country(n, nodes.index.to_series())).mean()
+    xy = centre.reindex(locations).fillna(n.buses.loc[ATMOSPHERE, ["x", "y"]])
+    n.add(
+        "Bus",
+        names,
+        carrier=ATTRIBUTE_CARRIERS[kind],
+        unit=unit,
+        location=locations,
+        country=locations,
+        x=xy.x.to_numpy(),
+        y=xy.y.to_numpy(),
+    )
+
+
+def _add_attribute_stores(n: pypsa.Network, buses: list[str], kind: str) -> None:
+    """Add cyclic stores, so that every attribute is claimed within the year (D5)."""
+    n.add(
+        "Store",
+        buses,
+        bus=buses,
+        carrier=ATTRIBUTE_CARRIERS[kind],
+        e_nom_extendable=True,
+        e_cyclic=True,
+        capital_cost=0.0,
+    )
+
+
+def _add_claim_links(
+    n: pypsa.Network, cts: list[str], kind: str, attribute: str, factor: float
+) -> None:
+    """Add claim links from the country attribute buses to the atmosphere."""
+    n.add(
+        "Link",
+        [claim_link(ct, kind) for ct in cts],
+        bus0=[attribute_bus(ct, attribute) for ct in cts],
+        bus1=ATMOSPHERE,
+        carrier=CLAIM_CARRIERS[kind],
+        efficiency=-factor,
+        p_nom=UNBOUNDED,
+    )
+
+
+def gas_borders(n: pypsa.Network) -> pd.DataFrame:
+    """
+    Return the gas pipelines that cross a country border.
+
+    Parameters
+    ----------
+    n
+        The network.
+
+    Returns
+    -------
+    :
+        Columns ``from`` and ``to`` (country codes), indexed by pipeline.
+    """
+    pipes = n.links[n.links.carrier.isin(FUEL_TRANSPORT)]
+    borders = pd.DataFrame(
+        {"from": bus_country(n, pipes.bus0), "to": bus_country(n, pipes.bus1)}
+    )
+    return borders[borders["from"] != borders["to"]]
+
+
+def transfer_link(origin: str, destination: str) -> str:
+    """Return the name of the gas attribute transfer between two countries."""
+    return f"{attribute_bus(origin, 'gas')} -> {destination}"
+
+
+def _add_gas_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
+    """Add the per-country gas attribute buses, stores, claims and transfers."""
+    cts = countries(n, "gas")
+    buses = [attribute_bus(ct, "gas") for ct in cts]
+    _add_attribute_buses(n, buses, "gas", cts, unit="MWh")
+    _add_attribute_stores(n, buses, "gas")
+    _add_claim_links(n, cts, "gas", "gas", ef["gas"])
+
+    pairs = gas_borders(n).drop_duplicates().sort_values(["from", "to"])
+    n.add(
+        "Link",
+        [transfer_link(x, y) for x, y in pairs.itertuples(index=False)],
+        bus0=[attribute_bus(x, "gas") for x in pairs["from"]],
+        bus1=[attribute_bus(y, "gas") for y in pairs["to"]],
+        carrier=TRANSFER_CARRIER,
+        p_nom=UNBOUNDED,
+    )
+
+
+def drop_accounting_layer(n: pypsa.Network) -> None:
+    """
+    Remove the accounting layer, if present, before it is rebuilt.
+
+    ``add_brownfield`` already drops the layer of the previous horizon,
+    because its components have an infinite lifetime. This is a safety net.
+
+    Parameters
+    ----------
+    n
+        The network, modified in place.
+
+    Returns
+    -------
+    :
+        Modifies the network in place.
+    """
+    carriers = (
+        set(ATTRIBUTE_CARRIERS.values()) | set(ACCOUNTING_LINK_CARRIERS) | {CO2_IMPORT}
+    )
+    for c in ("Link", "Store", "Generator", "Bus"):
+        static = n.components[c].static
+        n.remove(c, static.index[static.carrier.isin(carriers)])
+
+
+def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
+    """
+    Add the accounting layer of the carrier-based method (spec section 3.3).
+
+    Parameters
+    ----------
+    n
+        The network, modified in place.
+    ef
+        Emission factor per fuel in t/MWh.
+
+    Returns
+    -------
+    :
+        Modifies the network in place.
+    """
+    _add_gas_layer(n, ef)
+
+    # green imports draw their carbon from a virtual source instead of the
+    # atmosphere (section 3.4)
+    n.add("Bus", CO2_IMPORT, carrier=CO2_IMPORT, unit="t_co2", location="EU")
+    n.add("Generator", CO2_IMPORT, bus=CO2_IMPORT, carrier=CO2_IMPORT, p_nom=UNBOUNDED)
+
+    carriers = (
+        set(ATTRIBUTE_CARRIERS.values()) | set(ACCOUNTING_LINK_CARRIERS) | {CO2_IMPORT}
+    )
+    n.add("Carrier", sorted(carriers - set(n.carriers.index)))
+
+
+def _fuel_output(n: pypsa.Network, idx: pd.Index) -> pd.DataFrame:
+    """Return bus, fuel and efficiency of the first fuel output port of links."""
+    out = pd.DataFrame({"bus": "", "fuel": "", "efficiency": 0.0}, index=idx)
+    for port in reversed(link_ports(n)[1:]):
+        fuel = port_bus_carrier(n, port).loc[idx]
+        efficiency = port_efficiency(n, port).loc[idx]
+        is_output = fuel.isin(ACCOUNTING_FUELS) & (efficiency > 0)
+        out.loc[is_output, "bus"] = n.links.loc[idx, f"bus{port}"][is_output]
+        out.loc[is_output, "fuel"] = fuel[is_output]
+        out.loc[is_output, "efficiency"] = efficiency[is_output]
+    if (out.fuel == "").any():
+        raise ValueError(f"Links without fuel output: {list(idx[out.fuel == ''])}")
+    return out
+
+
+def add_attribute_ports(n: pypsa.Network) -> None:
+    """
+    Connect green fuel producers to the attribute bus of their output.
+
+    Each unmarked link of the classes G1-G3 gets one attribute per MWh of
+    green fuel. Gas attributes go to the country of the gas bus they feed.
+    Green imports take their carbon from the ``co2 import`` bus instead of
+    the atmosphere.
+
+    Parameters
+    ----------
+    n
+        The network, modified in place.
+
+    Returns
+    -------
+    :
+        Modifies the network in place.
+    """
+    out = _fuel_output(n, class_links(n, "G1", "G2", "G3"))
+    imports = out.index[n.links.loc[out.index, "carrier"].isin(GREEN_IMPORTS)]
+    n.links.loc[imports, "bus0"] = CO2_IMPORT
+
+    gas = out[out.fuel == "gas"]
+    bus = bus_country(n, gas.bus).map(lambda ct: attribute_bus(ct, "gas"))
+    add_link_port(n, gas.index, bus, gas.efficiency)
+
+
 def mark_transformed(n: pypsa.Network) -> None:
     """Mark all links of the transformed classes, so they are skipped next time."""
     idx = class_links(n, *TRANSFORMED_CLASSES)
@@ -251,6 +471,7 @@ def unclassified_carriers(n: pypsa.Network) -> list[str]:
     for port in link_ports(n):
         at_bus |= n.links[f"bus{port}"].map(n.buses.carrier).isin(bus_carriers)
     classified = {c for carriers in TRANSFORMATION_CLASSES.values() for c in carriers}
+    classified |= set(ACCOUNTING_LINK_CARRIERS)
     return sorted(set(n.links.carrier[at_bus]) - classified)
 
 
@@ -296,5 +517,8 @@ def apply_carbon_accounting(
     logger.info("Applying the carrier-based carbon accounting method.")
 
     ef = emission_factors(costs)
+    drop_accounting_layer(n)
+    add_accounting_layer(n, ef)
     transform_emission_ports(n, ef)
+    add_attribute_ports(n)
     mark_transformed(n)

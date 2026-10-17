@@ -47,6 +47,21 @@ Everything else is inherited: all countries, the planning horizons 2025, 2030,
     uses the first planning horizon and `demand.source_years`. 2025 remains the
     calibrated starting point, so 2030 inherits a realistic brownfield.
 
+## Scenarios
+
+| Scenario | Carbon accounting |
+|---|---|
+| `CA_base` | `technology`: the technology that releases CO2 books it (status quo) |
+| `CA_carrier` | `carrier`: green fuels book zero, countries claim green certificates |
+
+See [Carbon accounting methods](../explanations/co2-balancing.md#carbon-accounting-methods)
+for the difference. To run only one scenario, request its last solved network, e.g.
+
+```bash
+pixi run snakemake results/carbon-accounting/CA_carrier/networks/solved_2050.nc -call \
+  --configfile config/config.carbon-accounting.yaml
+```
+
 ## Add an accounting variant
 
 Add an entry to `config/scenarios.carbon-accounting.yaml` and list it under

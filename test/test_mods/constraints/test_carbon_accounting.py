@@ -34,7 +34,6 @@ from mods.network.carbon_accounting import (
     port_bus_carrier,
     port_efficiency,
 )
-from test.conftest import require_config
 from test.test_mods.conftest import (
     EF,
     build_carbon_network,
@@ -325,10 +324,12 @@ class TestRemovalClaims:
 
 def _require_carrier(nc) -> None:
     """Skip the integration tests for runs without carrier-based accounting."""
-    require_config(nc, "mods", "carbon_accounting")
-    for n in nc:
-        if n.meta["mods"]["carbon_accounting"]["method"] != "carrier":
-            pytest.skip("integration tests need method 'carrier'")
+    methods = {
+        n.meta["mods"].get("carbon_accounting", {}).get("method", "technology")
+        for n in nc
+    }
+    if methods != {"carrier"}:
+        pytest.skip(f"integration tests need method 'carrier', got {methods}")
 
 
 def _annual_p0(n: pypsa.Network) -> pd.Series:

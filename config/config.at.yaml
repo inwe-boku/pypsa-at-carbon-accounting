@@ -451,3 +451,9 @@ mods:
       2040: 1.10  # 10% larger exogen electricity base load by 2040
                   # to meet UBA Transition value of 121 +-10% TWh
       2050: 1.10
+
+  # Carbon accounting method for national CO2 budgets, the EU CO2 cap and the
+  # reported emissions. See docs-at/explanations/carbon-accounting-spec.md
+  carbon_accounting:
+    enable: true
+    method: technology  # technology (status quo) | carrier (green fuels book zero)

@@ -225,14 +225,18 @@ mods:
 def apply_carbon_accounting(n: pypsa.Network, snakemake) -> None:
     """Orchestrator: guard on enable/method, then call the steps below in order."""
 
+
 def drop_accounting_layer(n) -> None:
     """Safety net: remove accounting buses/stores/links by carrier if present."""
+
 
 def add_accounting_layer(n, countries, ef: dict[str, float]) -> None:
     """Add attribute buses, stores, claim, distribution and transfer links, the co2 import bus/generator."""
 
+
 def transform_emission_ports(n, ef: dict[str, float]) -> None:
     """Apply the rules of 3.2 to G1, C1, V1. Skips links marked as transformed."""
+
 
 def add_attribute_ports(n) -> None:
     """Add the attribute port to G1–G3 and the removal port to S1; re-point G3 bus0. Skips marked links."""

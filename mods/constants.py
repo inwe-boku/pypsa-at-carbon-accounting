@@ -185,3 +185,129 @@ UNITS: frozendict = frozendict(
         "Mt_co2": 1e6,
     }
 )
+
+# Carbon accounting (docs-at/explanations/carbon-accounting-spec.md, section 3.2).
+# Link carriers per transformation class of the carrier-based method.
+GREEN_BIO_PRODUCERS: tuple[str, ...] = (
+    "biogas to gas",
+    "biogas to gas CC",
+    "BioSNG",
+    "BioSNG CC",
+    "biomass to liquid",
+    "biomass to liquid CC",
+    "electrobiofuels",
+    "unsustainable bioliquids",
+    "biomass-to-methanol",
+    "biomass-to-methanol CC",
+)
+GREEN_SYNTHETIC_PRODUCERS: tuple[str, ...] = (
+    "Fischer-Tropsch",
+    "Sabatier",
+    "methanolisation",
+)
+GREEN_IMPORTS: tuple[str, ...] = ("import gas", "import oil", "import methanol")
+CAPTURE: tuple[str, ...] = (
+    "DAC",
+    "SMR CC",
+    "gas for industry CC",
+    "urban central gas CHP CC",
+    "CCGT methanol CC",
+    "Methanol steam reforming CC",
+    "allam methanol",
+    "waste CHP CC",
+    "process emissions CC",
+    "solid biomass for industry CC",
+    "solid biomass to hydrogen",
+    "urban central solid biomass CHP CC",
+)
+SEQUESTRATION: tuple[str, ...] = ("co2 sequestered",)
+VENT: tuple[str, ...] = ("co2 vent",)
+FUEL_TRANSPORT: tuple[str, ...] = ("gas pipeline", "gas pipeline new")
+# links at CO2 or fuel buses that both methods treat the same
+UNCHANGED: tuple[str, ...] = (
+    *FUEL_TRANSPORT,
+    "CO2 pipeline",
+    "co2 compression",
+    "co2 expansion",
+    "CCGT",
+    "OCGT",
+    "SMR",
+    "gas for industry",
+    "methane pyrolysis plasma",
+    "rural gas boiler",
+    "urban central gas boiler",
+    "urban decentral gas boiler",
+    "urban central gas CHP",
+    "agriculture machinery oil",
+    "kerosene for aviation",
+    "land transport oil",
+    "naphtha for industry",
+    "shipping oil",
+    "oil",
+    "rural oil boiler",
+    "urban decentral oil boiler",
+    "urban central oil CHP",
+    "CCGT methanol",
+    "OCGT methanol",
+    "Methanol steam reforming",
+    "industry methanol",
+    "methanol-to-kerosene",
+    "shipping methanol",
+    "coal",
+    "coal for industry",
+    "lignite",
+    "urban central coal CHP",
+    "urban central lignite CHP",
+    "oil refining",
+    "nuclear",
+    "process emissions",
+    "HVC to air",
+    "waste CHP",
+    "municipal solid waste",
+)
+# producers that capture CO2 in addition to the capture class (section 3.2)
+GREEN_BIO_PRODUCERS_CC: tuple[str, ...] = tuple(
+    c for c in GREEN_BIO_PRODUCERS if c.endswith(" CC")
+)
+CAPTURE_ELIGIBLE: tuple[str, ...] = (*CAPTURE, *GREEN_BIO_PRODUCERS_CC)
+
+# bus carriers whose link ports must be classified
+CO2_BUS_CARRIERS: tuple[str, ...] = (
+    "co2",
+    "co2 stored",
+    "co2 dense",
+    "co2 sequestered",
+)
+ACCOUNTING_FUELS: tuple[str, ...] = ("gas", "oil", "methanol")
+
+# accounting layer of the carrier-based method (section 3.3)
+CARBON_ACCOUNTING_METHODS: tuple[str, ...] = ("technology", "carrier")
+CARBON_ACCOUNTING_MARKER = "carbon_accounting"
+CO2_IMPORT = "co2 import"
+ATTRIBUTE_CARRIERS: frozendict = frozendict(
+    {
+        "gas": "renewable gas attribute",
+        "oil": "renewable oil attribute",
+        "methanol": "renewable methanol attribute",
+        "removal": "co2 removal attribute",
+    }
+)
+# fuels whose attributes are pooled EU-wide (D3, D15); gas follows the pipelines
+POOLED_ATTRIBUTES: tuple[str, ...] = ("oil", "methanol", "removal")
+CLAIM_CARRIERS: frozendict = frozendict(
+    {
+        "gas": "renewable gas claim",
+        "oil": "renewable oil claim",
+        "oil aviation": "renewable oil claim aviation",
+        "methanol": "renewable methanol claim",
+        "removal": "co2 removal claim",
+    }
+)
+AVIATION_CARRIERS: tuple[str, ...] = (
+    "kerosene for aviation",
+    CLAIM_CARRIERS["oil aviation"],
+)
+TRANSFER_CARRIER = "renewable gas attribute transfer"
+DISTRIBUTION_CARRIERS: frozendict = frozendict(
+    {k: f"{ATTRIBUTE_CARRIERS[k]} distribution" for k in POOLED_ATTRIBUTES}
+)

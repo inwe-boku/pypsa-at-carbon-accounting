@@ -16,6 +16,7 @@ run:
   prefix: carbon-accounting
   name:
   - CA_base
+  - CA_carrier
   scenarios:
     enable: true
     file: config/scenarios.carbon-accounting.yaml

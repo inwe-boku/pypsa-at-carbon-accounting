@@ -46,7 +46,9 @@ def _add_node(n: pypsa.Network, node: str) -> None:
         n.add("Bus", f"{node}{suffix}", carrier=carrier, location=node, unit=unit)
 
 
-def build_carbon_network(nodes: tuple[str, ...] = ("AT1", "DE1")) -> pypsa.Network:
+def build_carbon_network(
+    nodes: tuple[str, ...] = ("AT1", "DE1"), suffix: str = ""
+) -> pypsa.Network:
     """
     Build a small network with one link per carbon accounting class.
 
@@ -58,6 +60,8 @@ def build_carbon_network(nodes: tuple[str, ...] = ("AT1", "DE1")) -> pypsa.Netwo
     ----------
     nodes
         Node names; the first two characters are the country code.
+    suffix
+        Appended to the names of the node links, e.g. ``-2030``.
 
     Returns
     -------
@@ -167,7 +171,7 @@ def build_carbon_network(nodes: tuple[str, ...] = ("AT1", "DE1")) -> pypsa.Netwo
             ),
         }
         for carrier, attrs in links.items():
-            n.add("Link", f"{node} {carrier}", carrier=carrier, **attrs)
+            n.add("Link", f"{node} {carrier}{suffix}", carrier=carrier, **attrs)
 
     n.add(
         "Link",

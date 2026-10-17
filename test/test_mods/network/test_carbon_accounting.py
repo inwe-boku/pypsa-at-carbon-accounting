@@ -7,7 +7,9 @@
 from itertools import combinations
 
 import pandas as pd
+import pypsa
 import pytest
+from add_brownfield import add_brownfield
 
 from evals.utils import get_location
 from mods.constants import (
@@ -15,6 +17,7 @@ from mods.constants import (
     CAPTURE_ELIGIBLE,
     CARBON_ACCOUNTING_MARKER,
     GREEN_BIO_PRODUCERS,
+    GREEN_IMPORTS,
 )
 from mods.network.carbon_accounting import (
     TRANSFORMATION_CLASSES,
@@ -28,6 +31,7 @@ from mods.network.carbon_accounting import (
 )
 from test.test_mods.conftest import (
     EF,
+    build_carbon_network,
     carbon_accounting_costs,
     carbon_accounting_snakemake,
 )
@@ -339,3 +343,79 @@ def test_sequestration_creates_removal_attributes(carbon_network):
     assert _port_to(carbon_network, "AT1 co2 sequestered", bus) == 1.0
     claim = carbon_network.links.loc["AT co2 removal claim"]
     assert (claim.bus0, claim.efficiency) == ("AT co2 removal attribute", -1.0)
+
+
+def _vintage(year: int) -> pypsa.Network:
+    """Build the network with links of one build year, as the workflow does."""
+    n = build_carbon_network(suffix=f"-{year}")
+    # sequestration, imports and pipelines are rebuilt in every horizon
+    infinite = n.links.carrier.isin(["co2 sequestered", "gas pipeline", *GREEN_IMPORTS])
+    n.links["p_nom_extendable"] = True
+    n.links["lifetime"] = 20.0
+    n.links.loc[infinite, "lifetime"] = float("inf")
+    n.links["build_year"] = year
+    n.add(
+        "Generator",
+        f"AT1 biogas-{year}",
+        bus="AT1 biogas",
+        p_nom_extendable=True,
+        lifetime=20.0,
+        build_year=year,
+    )
+    n.add(
+        "Store",
+        f"AT1 gas-{year}",
+        bus="AT1 gas",
+        e_nom_extendable=True,
+        lifetime=20.0,
+        build_year=year,
+    )
+    return n
+
+
+class TestBrownfield:
+    """U4: links copied from the previous horizon are not transformed twice."""
+
+    @pytest.fixture
+    def n(self, tmp_path):
+        previous = _vintage(2030)
+        _apply(previous)
+        previous.links["p_nom_opt"] = 1.0
+        previous.generators["p_nom_opt"] = 1.0
+        previous.stores["e_nom_opt"] = 1.0
+        # the workflow reads the previous horizon from its netCDF file
+        previous.export_to_netcdf(tmp_path / "solved_2030.nc")
+        previous = pypsa.Network(tmp_path / "solved_2030.nc")
+
+        n = _vintage(2040)
+        add_brownfield(n, previous, 2040, capacity_threshold=0.1)
+        _apply(n)
+        return n
+
+    @pytest.mark.parametrize("year", [2030, 2040])
+    def test_coefficients(self, n, year):
+        atm = _atmosphere(n)
+        assert atm[f"AT1 DAC-{year}"] == 0.0
+        assert atm[f"AT1 SMR CC-{year}"] == pytest.approx(0.198)
+        assert atm[f"AT1 biogas to gas-{year}"] == pytest.approx(0.0)
+        assert n.links.at[f"AT1 DAC-{year}", CARBON_ACCOUNTING_MARKER] == "carrier"
+
+    @pytest.mark.parametrize("year", [2030, 2040])
+    def test_one_attribute_port(self, n, year):
+        link = n.links.loc[f"AT1 biogas to gas-{year}"]
+        buses = [link[f"bus{p}"] for p in link_ports(n)]
+        assert buses.count("AT renewable gas attribute") == 1
+
+    def test_layer_exists_once(self, n):
+        claims = n.links.index[n.links.carrier == "renewable gas claim"]
+        assert sorted(claims) == ["AT renewable gas claim", "DE renewable gas claim"]
+        assert n.generators.index.tolist().count("co2 import") == 1
+        assert n.links.at["AT1 gas import", "bus0"] == "co2 import"
+        assert n.links.at["AT1 co2 sequestered-2040", "bus0"] == "AT1 co2 stored"
+
+
+def test_empty_marker_counts_as_unmarked(carbon_network):
+    """A netCDF round trip turns the NaN marker of untransformed links into ""."""
+    carbon_network.links[CARBON_ACCOUNTING_MARKER] = ""
+    _apply(carbon_network)
+    assert _atmosphere(carbon_network)["AT1 DAC"] == 0.0

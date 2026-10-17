@@ -153,10 +153,16 @@ def _efficiency_column(port: str) -> str:
 
 
 def port_efficiency(n: pypsa.Network, port: str) -> pd.Series:
-    """Return the static efficiency of a link port, ``-1`` for ``bus0``."""
+    """
+    Return the static efficiency of a link port, ``-1`` for ``bus0``.
+
+    Unconnected ports return 0. Links added after a port column was created,
+    e.g. by ``add_brownfield``, hold NaN there.
+    """
     if port == "0":
         return pd.Series(-1.0, index=n.links.index)
-    return n.links[_efficiency_column(port)].astype(float)
+    connected = n.links[f"bus{port}"].fillna("") != ""
+    return n.links[_efficiency_column(port)].astype(float).where(connected, 0.0)
 
 
 def port_bus_carrier(n: pypsa.Network, port: str) -> pd.Series:
@@ -207,8 +213,9 @@ def add_link_port(
 def class_links(n: pypsa.Network, *classes: str) -> pd.Index:
     """Return the links of the given transformation classes without the marker."""
     carriers = [c for k in classes for c in TRANSFORMATION_CLASSES[k]]
+    # unmarked links hold NaN, or "" after a netCDF round trip
     unmarked = (
-        n.links[CARBON_ACCOUNTING_MARKER].isna()
+        n.links[CARBON_ACCOUNTING_MARKER].ne("carrier")
         if CARBON_ACCOUNTING_MARKER in n.links
         else True
     )

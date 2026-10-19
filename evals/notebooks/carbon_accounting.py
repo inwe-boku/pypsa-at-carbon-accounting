@@ -41,7 +41,7 @@ def _():
 
 
 @app.cell
-def _(go, make_subplots, mo):
+def _(go, mo):
     # categorical slots in fixed order; a scenario keeps its colour across selections
     PALETTE = [
         "#2a78d6",
@@ -278,7 +278,6 @@ def _(
     bridge,
     ca,
     country,
-    go,
     horizon_select,
     layout,
     make_subplots,
@@ -454,21 +453,28 @@ def _(ca, colours, country, group_select, mo, physical, px, reference):
     _long = _group.reset_index()
     _long = _long[_long.set_index(["horizon", "item", "unit"]).index.isin(_table.index)]
     _unit = ", ".join(_long.unit.unique())
-    _fig = px.bar(
-        _long,
-        x="item",
-        y="value",
-        color="scenario",
-        facet_col="horizon",
-        barmode="group",
-        color_discrete_map=colours,
-        template="plotly_white",
-        labels={"value": _unit, "item": ""},
-        title=f"{country}: {group_select.value} ({_unit})",
-    )
-    _fig.update_traces(marker_line_width=0)
-    _fig.update_layout(bargap=0.25, legend=dict(orientation="h", y=-0.35), height=480)
-    _fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    _items = list(_table.index.unique("item"))
+
+    def _horizon_figure(horizon: str):
+        fig = px.bar(
+            _long[_long.horizon == horizon],
+            x="item",
+            y="value",
+            color="scenario",
+            barmode="group",
+            color_discrete_map=colours,
+            category_orders={"item": _items, "scenario": list(colours)},
+            template="plotly_white",
+            labels={"value": _unit, "item": ""},
+            title=f"{country} {horizon}: {group_select.value} ({_unit})",
+        )
+        fig.update_traces(marker_line_width=0)
+        fig.update_layout(
+            bargap=0.25, legend=dict(orientation="h", y=-0.35), height=420
+        )
+        return mo.ui.plotly(fig)
+
+    _figures = [_horizon_figure(h) for h in sorted(_long.horizon.unique())]
     mo.vstack(
         [
             mo.md(
@@ -478,7 +484,7 @@ def _(ca, colours, country, group_select, mo, physical, px, reference):
             ),
             group_select,
             mo.ui.table(_table.round(3).reset_index(), selection=None),
-            mo.ui.plotly(_fig),
+            *_figures,
         ]
     )
     return

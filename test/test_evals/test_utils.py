@@ -1264,7 +1264,7 @@ def test_scale_domestic_aviation():
 
 
 class TestCarbonAccountingClaims:
-    """D14: claimed credits next to the EU-average share and gross capture."""
+    """D14: claimed credits next to the EU-average share."""
 
     @pytest.fixture(scope="class")
     def credits(self) -> pd.Series:

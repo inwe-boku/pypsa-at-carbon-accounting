@@ -77,10 +77,9 @@ def view_balance_carbon_claims(
     Evaluate and export the CO2 credits claimed per country (carbon accounting).
 
     Under the carrier-based carbon accounting method, countries claim green
-    fuel and CO2 removal credits up to their own consumption or capture. The
-    view shows the claimed credits next to a reference: the credit at the
-    EU-average green share of each fuel, and the gross CO2 capture for
-    removals. Skipped for the technology-based method, which has no claims.
+    fuel credits up to their own consumption. The view shows the claimed
+    credits next to a reference: the credit at the EU-average green share of
+    each fuel. Skipped for the technology-based method, which has no claims.
 
     Parameters
     ----------

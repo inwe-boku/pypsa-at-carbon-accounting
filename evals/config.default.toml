@@ -410,7 +410,6 @@ legend_order = [
     "Renewable Oil Claim",
     "Renewable Kerosene Claim",
     "Renewable Methanol Claim",
-    "CO2 Removal Claim",
 ]
 checks = []  # "balances_almost_zero" deactivated, because it is not applicable for carbon budgets
 exports = []
@@ -424,7 +423,6 @@ database_specifier = ""
 "renewable oil claim" = "Renewable Oil Claim"
 "renewable oil claim aviation" = "Renewable Kerosene Claim"
 "renewable methanol claim" = "Renewable Methanol Claim"
-"co2 removal claim" = "CO2 Removal Claim"
 "agriculture machinery oil" = "Agriculture"
 "biogas to gas" = "Biogas"
 "biogas to gas CC" = "Biogas"
@@ -510,7 +508,6 @@ legend_order = [
     "Renewable Oil Claim",
     "Renewable Kerosene Claim",
     "Renewable Methanol Claim",
-    "CO2 Removal Claim",
 ]
 checks = []
 exports = ["csv"]
@@ -520,17 +517,16 @@ database_bus_carrier = "carbon"
 database_specifier = "claims"
 
 # left: credits claimed by the country, right: the credit at the EU-average
-# green share of each fuel, and the gross CO2 capture for removals
+# green share of each fuel
 [view_balance_carbon_claims.bus_carrier_groups]
 "claimed" = "Claimed"
-"reference" = "EU Average Share / Gross Capture"
+"reference" = "EU Average Share"
 
 [view_balance_carbon_claims.categories]
 "renewable gas claim" = "Renewable Gas Claim"
 "renewable oil claim" = "Renewable Oil Claim"
 "renewable oil claim aviation" = "Renewable Kerosene Claim"
 "renewable methanol claim" = "Renewable Methanol Claim"
-"co2 removal claim" = "CO2 Removal Claim"
 
 [view_balance_fuels]
 name = "Fuel Balance"
@@ -1589,7 +1585,6 @@ legend_order = [
     "Renewable Oil Claim",
     "Renewable Kerosene Claim",
     "Renewable Methanol Claim",
-    "CO2 Removal Claim",
 ]
 checks = []
 exports = []
@@ -1607,7 +1602,6 @@ pivot_index=["year", "location", "carrier"]
 "renewable oil claim" = "Renewable Oil Claim"
 "renewable oil claim aviation" = "Renewable Kerosene Claim"
 "renewable methanol claim" = "Renewable Methanol Claim"
-"co2 removal claim" = "CO2 Removal Claim"
 "BioSNG" = "Biogas"
 "BioSNG CC" = "Biogas"
 "CCGT" = "Thermal Powerplant"

@@ -51,7 +51,4 @@ plotting:
     renewable methanol attribute: '#c7a5d6'
     renewable methanol attribute distribution: '#c7a5d6'
     renewable methanol claim: '#c7a5d6'
-    co2 removal attribute: '#5c5c5c'
-    co2 removal attribute distribution: '#5c5c5c'
-    co2 removal claim: '#5c5c5c'
     co2 import: '#999999'

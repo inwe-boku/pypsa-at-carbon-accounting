@@ -463,7 +463,6 @@ COLOUR_SCHEME: dict = {
     "Renewable Oil Claim": COLOUR.salmon,
     "Renewable Kerosene Claim": COLOUR.peach,
     "Renewable Methanol Claim": COLOUR.rose,
-    "CO2 Removal Claim": COLOUR.grey_charcoal,
     "HVC": COLOUR.blue_moonstone,
     Group.import_foreign: COLOUR.grey_silver,
     Group.export_foreign: COLOUR.grey_silver,
@@ -652,7 +651,6 @@ FUEL_CLAIM_CARRIERS = frozendict(
         "renewable methanol claim": "methanol",
     }
 )
-REMOVAL_CLAIM_CARRIER = "co2 removal claim"
 
 try:
     repo = git.Repo(search_parent_directories=True)

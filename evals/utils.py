@@ -29,7 +29,6 @@ from evals.constants import (
     COLOUR_SCHEME,
     FUEL_CLAIM_CARRIERS,
     LINE_WIDTH,
-    REMOVAL_CLAIM_CARRIER,
     UNITS,
     BusCarrier,
     DataModel,
@@ -1150,26 +1149,13 @@ def _claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(consumption).fillna(0.0)
 
 
-def _gross_capture(n: pypsa.Network, p0: pd.Series) -> pd.Series:
-    """Return the annual CO2 captured into ``co2 stored`` per country."""
-    transport = n.links.carrier.isin(["co2 expansion", "CO2 pipeline"])
-    captured = pd.Series(0.0, index=n.links.index)
-    for port in _link_ports(n)[1:]:
-        to_store = n.links[f"bus{port}"].map(n.buses.carrier) == "co2 stored"
-        column = "efficiency" if port == "1" else f"efficiency{port}"
-        efficiency = n.links[column].where(to_store & ~transport, 0.0).fillna(0.0)
-        captured += efficiency.clip(lower=0.0) * p0
-    return captured.groupby(captured.index.str[:2]).sum()
-
-
 def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     """
     Compare the claimed CO2 credits of each country with a reference.
 
     Under the carrier-based carbon accounting, countries claim green fuel
-    and removal credits up to their own consumption or capture (D14). The
-    reference for a fuel is the credit at the EU-average green share of
-    that fuel, for removals it is the gross capture of the country.
+    credits up to their own consumption (D14). The reference for a fuel is
+    the credit at the EU-average green share of that fuel.
 
     Parameters
     ----------
@@ -1185,8 +1171,7 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     """
     weightings = n.snapshot_weightings.generators
     p0 = n.links_t.p0.mul(weightings, axis=0).sum().reindex(n.links.index, fill_value=0)
-    claim_carriers = [*FUEL_CLAIM_CARRIERS, REMOVAL_CLAIM_CARRIER]
-    claims = n.links[n.links.carrier.isin(claim_carriers)]
+    claims = n.links[n.links.carrier.isin(FUEL_CLAIM_CARRIERS)]
     names = pd.MultiIndex.from_arrays([[], [], []], names=DataModel.IDX_NAMES)
     if claims.empty:
         return pd.Series(dtype=float, index=names)
@@ -1202,22 +1187,13 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     fuel = consumption.index.get_level_values(DataModel.CARRIER).map(
         FUEL_CLAIM_CARRIERS
     )
-    is_removal = (
-        claimed.index.get_level_values(DataModel.CARRIER) == REMOVAL_CLAIM_CARRIER
-    )
-    claimed_fuel = claimed[~is_removal]
-    claimed_fuel = claimed_fuel.reindex(consumption.index, fill_value=0.0)
+    claimed_fuel = claimed.reindex(consumption.index, fill_value=0.0)
     share = claimed_fuel.groupby(fuel.to_numpy()).sum() / consumption.groupby(
         fuel.to_numpy()
     ).sum().replace(0.0, float("nan"))
     reference = consumption * fuel.map(share).fillna(0.0).to_numpy()
 
-    capture = _gross_capture(n, p0)
-    capture.index = pd.MultiIndex.from_arrays(
-        [capture.index, [REMOVAL_CLAIM_CARRIER] * len(capture)],
-        names=DataModel.IDX_NAMES[:2],
-    )
-    reference = pd.concat([reference * factor.reindex(reference.index), capture])
+    reference = reference * factor.reindex(reference.index)
     credits = pd.concat(
         {"claimed": claimed * factor, "reference": reference.dropna()},
         names=[DataModel.BUS_CARRIER],

@@ -303,20 +303,24 @@ def build_oil_toy() -> pypsa.Network:
     """
     Extend the gas toy with oil: Fischer-Tropsch in AT, oil users in both.
 
-    AT1 makes 10 MW of synthetic oil from H2 and stored CO2. AT1 and DE1 each
-    burn 10 MW in shipping and fossil oil covers the rest. A DE reward on
-    claims shows that oil attributes reach any country (EU pool).
+    AT1 makes 10 MW of synthetic oil from H2 and CO2 captured by DAC. AT1 and
+    DE1 each burn 10 MW in shipping and fossil oil covers the rest. A DE reward
+    on claims shows that oil attributes reach any country (EU pool).
     """
     n = build_gas_toy()
     for node in ("AT1",):
         n.add("Bus", f"{node} H2", carrier="H2", location=node)
         n.add("Bus", f"{node} co2 stored", carrier="co2 stored", location=node)
         n.add("Generator", f"{node} H2", bus=f"{node} H2", carrier="H2", p_nom=100)
+        n.add("Generator", node, bus=node, carrier="AC", p_nom=100, marginal_cost=1)
         n.add(
-            "Generator",
-            f"{node} co2 stored",
-            bus=f"{node} co2 stored",
-            carrier="co2 stored",
+            "Link",
+            f"{node} DAC",
+            carrier="DAC",
+            bus0=node,
+            bus1=f"{node} co2 stored",
+            bus2="co2 atmosphere",
+            efficiency2=-1.0,
             p_nom=100,
         )
     n.add(

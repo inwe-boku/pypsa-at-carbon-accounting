@@ -13,11 +13,10 @@ from add_brownfield import add_brownfield
 
 from evals.utils import get_location
 from mods.constants import (
-    CAPTURE,
-    CAPTURE_ELIGIBLE,
     CARBON_ACCOUNTING_MARKER,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
+    GREEN_SYNTHETIC_PRODUCERS,
 )
 from mods.network.carbon_accounting import (
     TRANSFORMATION_CLASSES,
@@ -74,10 +73,6 @@ class TestClassification:
         overlap = set(TRANSFORMATION_CLASSES[a]) & set(TRANSFORMATION_CLASSES[b])
         assert not overlap
 
-    def test_capture_eligible(self):
-        bio_cc = {c for c in GREEN_BIO_PRODUCERS if c.endswith(" CC")}
-        assert set(CAPTURE_ELIGIBLE) == set(CAPTURE) | bio_cc
-
     def test_toy_network_is_classified(self, carbon_network):
         assert unclassified_carriers(carbon_network) == []
 
@@ -93,20 +88,10 @@ class TestClassification:
         assert link_ports(carbon_network) == ["0", "1", "2", "3"]
 
 
-def _co2_stored_carriers(n) -> set[str]:
-    """Return carriers of links with a port at a ``co2 stored`` bus."""
-    at_stored = pd.Series(False, index=n.links.index)
-    for port in link_ports(n):
-        at_stored |= n.links[f"bus{port}"].map(n.buses.carrier) == "co2 stored"
-    return set(n.links.carrier[at_stored])
-
-
 def test_solved_networks_are_classified(nc):
     """U5 on the solved networks: fail early on upstream changes."""
     for n in nc:
         assert unclassified_carriers(n) == []
-        bio_cc = _co2_stored_carriers(n) & set(GREEN_BIO_PRODUCERS)
-        assert bio_cc <= set(CAPTURE_ELIGIBLE)
 
 
 def _atmosphere(n) -> pd.Series:
@@ -123,28 +108,29 @@ def test_emission_factors():
 
 
 class TestEmissionPorts:
-    """U2: the gross emission rule of section 3.2 per class."""
+    """U2: the emission rule of section 3.2 per class."""
 
     @pytest.mark.parametrize(
         ("carrier", "expected"),
         [
             ("biogas to gas", 0.0),
-            ("biogas to gas CC", 0.0),
+            # the stored share keeps its credit
+            ("biogas to gas CC", -0.13023),
             ("biomass to liquid", -0.1157 + 0.45 * EF["oil"]),
             ("biomass-to-methanol", -0.1614 + 0.65 * EF["methanol"]),
-            ("DAC", 0.0),
-            ("SMR CC", 0.198),
-            ("co2 vent", 0.0),
+            # CO2 used for synthetic fuels is charged at the CCU plant
+            ("Sabatier", 0.8 * EF["gas"]),
+            ("Fischer-Tropsch", 0.734 * EF["oil"]),
         ],
     )
-    def test_gross_emissions(self, carbon_network, carrier, expected):
+    def test_emissions(self, carbon_network, carrier, expected):
         _apply(carbon_network)
         atm = _atmosphere(carbon_network)
         assert atm[f"AT1 {carrier}"] == pytest.approx(expected, abs=1e-12)
 
     @pytest.mark.parametrize(
         "carrier",
-        ["Sabatier", "Fischer-Tropsch", "CCGT", "kerosene for aviation"],
+        ["DAC", "SMR CC", "co2 vent", "CCGT", "kerosene for aviation"],
     )
     def test_other_links_keep_their_emissions(self, carbon_network, carrier):
         before = _atmosphere(carbon_network)
@@ -152,23 +138,19 @@ class TestEmissionPorts:
         name = f"AT1 {carrier}"
         assert _atmosphere(carbon_network)[name] == before[name]
 
-    def test_capture_without_atmosphere_port_gets_one(self, carbon_network):
-        carbon_network.add(
-            "Link",
-            "AT1 waste CHP CC",
-            carrier="waste CHP CC",
-            bus0="AT1",
-            bus1="AT1 co2 stored",
-            efficiency=0.23,
-        )
+    def test_ccu_charge_gets_its_own_port(self, carbon_network):
+        """Synthetic fuel producers have no atmosphere port in the technology method."""
+        assert (carbon_network.links.loc["AT1 Sabatier"] != "co2 atmosphere").all()
         _apply(carbon_network)
-        assert _atmosphere(carbon_network)["AT1 waste CHP CC"] == pytest.approx(0.23)
+        assert _port_to(carbon_network, "AT1 Sabatier", "co2 atmosphere") == (
+            pytest.approx(0.8 * EF["gas"])
+        )
 
     def test_transformed_links_are_marked(self, carbon_network):
         _apply(carbon_network)
         marker = carbon_network.links[CARBON_ACCOUNTING_MARKER]
-        assert marker["AT1 DAC"] == "carrier"
         assert marker["AT1 Sabatier"] == "carrier"
+        assert pd.isna(marker["AT1 DAC"])
         assert pd.isna(marker["AT1 CCGT"])
 
 
@@ -183,14 +165,14 @@ def _normalised(links: pd.DataFrame) -> pd.DataFrame:
 
 
 def test_idempotent(carbon_network):
-    """U3: a second run changes nothing, including capture-only links."""
+    """U3: a second run changes nothing, including the CCU charge."""
     _apply(carbon_network)
     once = _normalised(carbon_network.links)
     _apply(carbon_network)
     assert _normalised(carbon_network.links).equals(once)
-    assert _atmosphere(carbon_network)[["AT1 DAC", "AT1 SMR CC"]].tolist() == [
-        0.0,
-        pytest.approx(0.198),
+    assert _atmosphere(carbon_network)[["AT1 DAC", "AT1 Sabatier"]].tolist() == [
+        -1.0,
+        pytest.approx(0.8 * EF["gas"]),
     ]
 
 
@@ -198,18 +180,27 @@ def test_port_bus_carrier(carbon_network):
     assert port_bus_carrier(carbon_network, "2")["AT1 DAC"] == "co2"
 
 
-def test_solved_networks_gross_emissions(nc):
-    """U2 on the solved networks: bio-fuel residuals are tiny, capture is gross."""
+def _co2_stored(n) -> pd.Series:
+    """Return the summed efficiency at ``co2 stored`` buses per link."""
+    stored = pd.Series(0.0, index=n.links.index)
+    for port in link_ports(n):
+        at_stored = port_bus_carrier(n, port) == "co2 stored"
+        stored += port_efficiency(n, port).where(at_stored, 0.0)
+    return stored
+
+
+def test_solved_networks_emissions(nc):
+    """U2 on the solved networks: bio-fuels book their stored CO2, CCU its input."""
     for n in nc:
         m = n.copy()
         _apply(m)
-        atm = _atmosphere(m)
+        atm, stored = _atmosphere(m), _co2_stored(m)
         bio = m.links.carrier.isin(GREEN_BIO_PRODUCERS)
-        assert atm[bio].abs().max() <= 2e-4 + 1e-12
+        assert (atm[bio] + stored[bio]).abs().max() <= 2e-4 + 1e-12
+        ccu = m.links.carrier.isin(GREEN_SYNTHETIC_PRODUCERS)
+        assert (atm[ccu] + stored[ccu]).abs().max() <= 1e-12
         dac = m.links.carrier == "DAC"
-        assert (atm[dac] == 0).all()
-        capture = m.links.carrier.isin(CAPTURE)
-        assert (atm[capture] >= 0).all()
+        assert atm[dac].eq(_atmosphere(n)[dac]).all()
 
 
 def _port_to(n, link: str, bus: str) -> float:
@@ -335,14 +326,13 @@ def test_claims_are_located_in_their_country(carbon_network):
     assert (location[claims] == claims.str[:2]).all()
 
 
-def test_sequestration_creates_removal_attributes(carbon_network):
-    """Section 3.3: one removal attribute per t sequestered, pooled EU-wide."""
+def test_sequestration_is_unchanged(carbon_network):
+    """Section 3.2: stored CO2 is credited at capture, so there are no removal claims."""
+    before = carbon_network.links.loc["AT1 co2 sequestered"].copy()
     _apply(carbon_network)
-    bus = "EU co2 removal attribute"
-    assert carbon_network.buses.at[bus, "unit"] == "t_co2"
-    assert _port_to(carbon_network, "AT1 co2 sequestered", bus) == 1.0
-    claim = carbon_network.links.loc["AT co2 removal claim"]
-    assert (claim.bus0, claim.efficiency) == ("AT co2 removal attribute", -1.0)
+    after = carbon_network.links.loc["AT1 co2 sequestered", before.index]
+    assert after.equals(before)
+    assert not carbon_network.buses.carrier.str.contains("removal").any()
 
 
 def _vintage(year: int) -> pypsa.Network:
@@ -395,10 +385,12 @@ class TestBrownfield:
     @pytest.mark.parametrize("year", [2030, 2040])
     def test_coefficients(self, n, year):
         atm = _atmosphere(n)
-        assert atm[f"AT1 DAC-{year}"] == 0.0
-        assert atm[f"AT1 SMR CC-{year}"] == pytest.approx(0.198)
+        assert atm[f"AT1 DAC-{year}"] == -1.0
+        assert atm[f"AT1 SMR CC-{year}"] == pytest.approx(0.0198)
         assert atm[f"AT1 biogas to gas-{year}"] == pytest.approx(0.0)
-        assert n.links.at[f"AT1 DAC-{year}", CARBON_ACCOUNTING_MARKER] == "carrier"
+        assert atm[f"AT1 Sabatier-{year}"] == pytest.approx(0.8 * EF["gas"])
+        marker = n.links.at[f"AT1 Sabatier-{year}", CARBON_ACCOUNTING_MARKER]
+        assert marker == "carrier"
 
     @pytest.mark.parametrize("year", [2030, 2040])
     def test_one_attribute_port(self, n, year):
@@ -418,4 +410,4 @@ def test_empty_marker_counts_as_unmarked(carbon_network):
     """A netCDF round trip turns the NaN marker of untransformed links into ""."""
     carbon_network.links[CARBON_ACCOUNTING_MARKER] = ""
     _apply(carbon_network)
-    assert _atmosphere(carbon_network)["AT1 DAC"] == 0.0
+    assert _atmosphere(carbon_network)["AT1 Sabatier"] == pytest.approx(0.8 * EF["gas"])

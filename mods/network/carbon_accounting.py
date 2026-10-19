@@ -9,7 +9,9 @@ The ``technology`` method is the status quo: the technology that releases CO2
 books it, and green fuel producers book a negative credit at creation. The
 ``carrier`` method books green fuels at zero and fossil fuels at their emission
 factor in the consuming country. It adds an accounting layer of attribute
-buses, stores and claim links. See
+buses, stores and claim links. Captured CO2 is credited at capture, as in the
+``technology`` method, and charged again where it is used for synthetic fuels.
+See
 ``docs-at/explanations/carbon-accounting-spec.md``.
 """
 
@@ -80,8 +82,9 @@ def carbon_accounting_method(config: dict) -> str | None:
     return method if config["enable"] else None
 
 
-# classes whose links get the carbon accounting marker
-TRANSFORMED_CLASSES: tuple[str, ...] = ("G1", "G2", "G3", "C1", "S1", "V1")
+# classes whose links get the carbon accounting marker; capture, sequestration
+# and vent links keep their coefficients of the technology method
+TRANSFORMED_CLASSES: tuple[str, ...] = ("G1", "G2", "G3")
 ATMOSPHERE = "co2 atmosphere"
 # capacity of the accounting links, large enough to never bind
 UNBOUNDED = 1e9
@@ -95,7 +98,6 @@ CLAIMS: dict[str, tuple[str, ...]] = {
     "gas": ("gas",),
     "oil": ("oil", "oil aviation"),
     "methanol": ("methanol",),
-    "removal": ("removal",),
 }
 POOL = "EU"
 
@@ -224,13 +226,15 @@ def class_links(n: pypsa.Network, *classes: str) -> pd.Index:
 
 def transform_emission_ports(n: pypsa.Network, ef: dict[str, float]) -> None:
     """
-    Book bio-fuel producers, capture and vent links at their gross emissions.
+    Remove the creation credit of bio-fuels and charge the CO2 used for synthetic fuels.
 
-    Applies ``atm_carrier = atm_technology + stored + EF_out * out`` to the
-    unmarked links of the classes G1, C1 and V1 (spec section 3.2), with
-    ``out = 0`` for capture and vent links. The rule is additive, so the EU
-    sum at the ``co2 atmosphere`` bus stays the same once all attributes
-    are claimed.
+    Applies ``atm_carrier = atm_technology + EF_out * out + used`` to the
+    unmarked links of the classes G1 and G2 (spec section 3.2). ``out`` is
+    the bio-fuel output of G1 links (0 for G2), ``used`` the CO2 that G2
+    links take from ``co2 stored`` (0 for G1). Capture keeps its credit, so
+    captured CO2 counts as removed unless it is used for synthetic fuels.
+    The rule is additive, so the EU sum at the ``co2 atmosphere`` bus stays
+    the same once all attributes are claimed.
 
     Parameters
     ----------
@@ -244,14 +248,16 @@ def transform_emission_ports(n: pypsa.Network, ef: dict[str, float]) -> None:
     :
         Modifies the network in place.
     """
-    idx = class_links(n, "G1", "C1", "V1")
+    idx = class_links(n, "G1", "G2")
     links = n.links.loc[idx]
     delta = pd.Series(0.0, index=idx)
     is_producer = links.carrier.isin(GREEN_BIO_PRODUCERS)
     for port in link_ports(n):
         carrier = port_bus_carrier(n, port).loc[idx]
         efficiency = port_efficiency(n, port).loc[idx]
-        delta += efficiency.where(carrier == "co2 stored", 0.0)
+        # CO2 taken from co2 stored (negative efficiency) is booked as emitted
+        used = -efficiency.clip(upper=0.0).where(~is_producer, 0.0)
+        delta += used.where(carrier == "co2 stored", 0.0)
         if port != "0":
             fuel_ef = carrier.map(ef).fillna(0.0)
             output = efficiency.clip(lower=0.0).where(is_producer, 0.0)
@@ -271,9 +277,7 @@ def transform_emission_ports(n: pypsa.Network, ef: dict[str, float]) -> None:
     missing = atm_port.index[(atm_port == "") & (delta != 0)]
     if not missing.empty:
         add_link_port(n, missing, pd.Series(ATMOSPHERE, index=missing), delta)
-    logger.info(
-        f"Booked {len(idx)} producer, capture and vent links at gross emissions."
-    )
+    logger.info(f"Rebooked the emissions of {len(idx)} green fuel producers.")
 
 
 def _add_attribute_buses(
@@ -403,11 +407,11 @@ def _add_pooled_layer(n: pypsa.Network, kind: str, factor: float) -> None:
     """
     cts = countries(n)
     pool = attribute_bus(POOL, kind)
-    _add_attribute_buses(n, [pool], kind, [POOL], unit=_unit(kind))
+    _add_attribute_buses(n, [pool], kind, [POOL], unit="MWh")
     _add_attribute_stores(n, [pool], kind)
 
     buses = [attribute_bus(ct, kind) for ct in cts]
-    _add_attribute_buses(n, buses, kind, cts, unit=_unit(kind))
+    _add_attribute_buses(n, buses, kind, cts, unit="MWh")
     n.add(
         "Link",
         [f"{pool} -> {ct}" for ct in cts],
@@ -418,10 +422,6 @@ def _add_pooled_layer(n: pypsa.Network, kind: str, factor: float) -> None:
     )
     for claim in CLAIMS[kind]:
         _add_claim_links(n, cts, claim, kind, factor)
-
-
-def _unit(kind: str) -> str:
-    return "t_co2" if kind == "removal" else "MWh"
 
 
 def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
@@ -443,8 +443,6 @@ def add_accounting_layer(n: pypsa.Network, ef: dict[str, float]) -> None:
     _add_gas_layer(n, ef)
     for fuel in ("oil", "methanol"):
         _add_pooled_layer(n, fuel, ef[fuel])
-    # one removal attribute per t of sequestered CO2, claimed at -1 t (D2, D15)
-    _add_pooled_layer(n, "removal", 1.0)
 
     # green imports draw their carbon from a virtual source instead of the
     # atmosphere (section 3.4)
@@ -532,32 +530,6 @@ def price_claims(n: pypsa.Network, cts: list[str], claim_cost: float) -> None:
     n.links.loc[idx, "marginal_cost"] = -n.links.loc[idx, "efficiency"] * claim_cost
 
 
-def add_removal_ports(n: pypsa.Network) -> None:
-    """
-    Connect sequestration links to the EU pool of removal attributes.
-
-    Each unmarked ``co2 sequestered`` link creates one removal attribute per
-    t of CO2 it sequesters (D2).
-
-    Parameters
-    ----------
-    n
-        The network, modified in place.
-
-    Returns
-    -------
-    :
-        Modifies the network in place.
-    """
-    idx = class_links(n, "S1")
-    sequestered = pd.Series(0.0, index=idx)
-    for port in link_ports(n)[1:]:
-        at_sink = port_bus_carrier(n, port).loc[idx] == "co2 sequestered"
-        sequestered += port_efficiency(n, port).loc[idx].where(at_sink, 0.0)
-    bus = pd.Series(attribute_bus(POOL, "removal"), index=idx)
-    add_link_port(n, idx, bus, sequestered)
-
-
 def mark_transformed(n: pypsa.Network) -> None:
     """Mark all links of the transformed classes, so they are skipped next time."""
     idx = class_links(n, *TRANSFORMED_CLASSES)
@@ -635,7 +607,6 @@ def apply_carbon_accounting(
     add_accounting_layer(n, ef)
     transform_emission_ports(n, ef)
     add_attribute_ports(n)
-    add_removal_ports(n)
     mark_transformed(n)
 
     budgets = snakemake.config["solving"]["constraints"]["co2_budget_national"] or {}

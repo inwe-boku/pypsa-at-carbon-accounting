@@ -200,12 +200,14 @@ GREEN_BIO_PRODUCERS: tuple[str, ...] = (
     "biomass-to-methanol",
     "biomass-to-methanol CC",
 )
+# synthetic fuel producers are charged for the captured CO2 they use (CCU)
 GREEN_SYNTHETIC_PRODUCERS: tuple[str, ...] = (
     "Fischer-Tropsch",
     "Sabatier",
     "methanolisation",
 )
 GREEN_IMPORTS: tuple[str, ...] = ("import gas", "import oil", "import methanol")
+# capture, sequestration and vent keep their technology-based coefficients
 CAPTURE: tuple[str, ...] = (
     "DAC",
     "SMR CC",
@@ -265,12 +267,6 @@ UNCHANGED: tuple[str, ...] = (
     "waste CHP",
     "municipal solid waste",
 )
-# producers that capture CO2 in addition to the capture class (section 3.2)
-GREEN_BIO_PRODUCERS_CC: tuple[str, ...] = tuple(
-    c for c in GREEN_BIO_PRODUCERS if c.endswith(" CC")
-)
-CAPTURE_ELIGIBLE: tuple[str, ...] = (*CAPTURE, *GREEN_BIO_PRODUCERS_CC)
-
 # bus carriers whose link ports must be classified
 CO2_BUS_CARRIERS: tuple[str, ...] = (
     "co2",
@@ -289,18 +285,16 @@ ATTRIBUTE_CARRIERS: frozendict = frozendict(
         "gas": "renewable gas attribute",
         "oil": "renewable oil attribute",
         "methanol": "renewable methanol attribute",
-        "removal": "co2 removal attribute",
     }
 )
-# fuels whose attributes are pooled EU-wide (D3, D15); gas follows the pipelines
-POOLED_ATTRIBUTES: tuple[str, ...] = ("oil", "methanol", "removal")
+# fuels whose attributes are pooled EU-wide (D3); gas follows the pipelines
+POOLED_ATTRIBUTES: tuple[str, ...] = ("oil", "methanol")
 CLAIM_CARRIERS: frozendict = frozendict(
     {
         "gas": "renewable gas claim",
         "oil": "renewable oil claim",
         "oil aviation": "renewable oil claim aviation",
         "methanol": "renewable methanol claim",
-        "removal": "co2 removal claim",
     }
 )
 AVIATION_CARRIERS: tuple[str, ...] = (

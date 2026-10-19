@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 # For license information, see the LICENSE.txt file in the project root.
-"""Toy solves for mods/constraints/carbon_accounting.py (spec section 6, U7-U9)."""
+"""Toy solves for mods/constraints/carbon_accounting.py (spec section 6, U7-U10)."""
 
 import warnings
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from evals.utils import get_energy_totals_domestic_share, scale_domestic_aviatio
 from mods.constants import (
     ATTRIBUTE_CARRIERS,
     AVIATION_CARRIERS,
+    CAPTURE,
     CLAIM_CARRIERS,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
@@ -230,12 +231,12 @@ def test_claimable_consumers(carbon_network, claim, expected):
     assert claimable_consumers(carbon_network, "AT", claim).tolist() == expected
 
 
-def build_removal_toy(nl_capture: float = 0.0) -> pypsa.Network:
+def build_capture_toy() -> pypsa.Network:
     """
-    Build a toy with DAC in AT and storage in NL.
+    Build a toy with DAC and Sabatier in AT and storage in NL.
 
-    AT1 captures 5 t/h with DAC and pipes it to NL1, where it is sequestered.
-    NL1 can capture extra CO2 itself.
+    AT1 captures 5 t/h with DAC. Sabatier uses part of it for synthetic gas,
+    which a CCGT in AT1 burns. The rest is piped to NL1 and sequestered.
     """
     n = pypsa.Network()
     n.set_snapshots(range(2))
@@ -248,28 +249,46 @@ def build_removal_toy(nl_capture: float = 0.0) -> pypsa.Network:
         e_nom_extendable=True,
         e_min_pu=-1,
     )
-    for node, capture in (("AT1", 5.0), ("NL1", nl_capture)):
+    for node in ("AT1", "NL1"):
         n.add("Bus", node, carrier="AC", location=node)
         n.add("Generator", node, bus=node, carrier="AC", p_nom=100, marginal_cost=1)
         n.add("Bus", f"{node} co2 stored", carrier="co2 stored", location=node)
-        n.add(
-            "Link",
-            f"{node} DAC",
-            carrier="DAC",
-            bus0=node,
-            bus1=f"{node} co2 stored",
-            bus2="co2 atmosphere",
-            efficiency2=-1.0,
-            p_nom=capture,
-            p_min_pu=1,
-        )
-    n.add("Bus", "NL1 co2 sequestered", carrier="co2 sequestered", location="NL1")
+    for suffix, carrier in ((" gas", "gas"), (" H2", "H2")):
+        n.add("Bus", f"AT1{suffix}", carrier=carrier, location="AT1")
+    n.add("Generator", "AT1 H2", bus="AT1 H2", carrier="H2", p_nom=100)
     n.add(
-        "Store",
-        "NL1 co2 sequestered",
-        bus="NL1 co2 sequestered",
-        carrier="co2 sequestered",
-        e_nom_extendable=True,
+        "Link",
+        "AT1 DAC",
+        carrier="DAC",
+        bus0="AT1",
+        bus1="AT1 co2 stored",
+        bus2="co2 atmosphere",
+        efficiency2=-1.0,
+        p_nom=5.0,
+        p_min_pu=1,
+    )
+    n.add(
+        "Link",
+        "AT1 Sabatier",
+        carrier="Sabatier",
+        bus0="AT1 H2",
+        bus1="AT1 gas",
+        bus2="AT1 co2 stored",
+        efficiency=0.8,
+        efficiency2=-0.8 * EF["gas"],
+        p_nom=1.0,
+        p_min_pu=1,
+    )
+    n.add(
+        "Link",
+        "AT1 CCGT",
+        carrier="CCGT",
+        bus0="AT1 gas",
+        bus1="AT1",
+        bus2="co2 atmosphere",
+        efficiency=0.6,
+        efficiency2=EF["gas"],
+        p_nom=100,
     )
     n.add(
         "Link",
@@ -278,6 +297,14 @@ def build_removal_toy(nl_capture: float = 0.0) -> pypsa.Network:
         bus0="AT1 co2 stored",
         bus1="NL1 co2 stored",
         p_nom=100,
+    )
+    n.add("Bus", "NL1 co2 sequestered", carrier="co2 sequestered", location="NL1")
+    n.add(
+        "Store",
+        "NL1 co2 sequestered",
+        bus="NL1 co2 sequestered",
+        carrier="co2 sequestered",
+        e_nom_extendable=True,
     )
     n.add(
         "Link",
@@ -290,36 +317,28 @@ def build_removal_toy(nl_capture: float = 0.0) -> pypsa.Network:
     return n
 
 
-class TestRemovalClaims:
-    """U9: capture in AT, sequestration in NL."""
+class TestCaptureAndUse:
+    """U9: captured CO2 counts as removed in AT unless AT uses it for synthetic gas."""
 
-    def test_credit_goes_to_capturing_country(self):
-        n = solve(build_removal_toy(), "carrier")
-        p0 = n.links_t.p0.sum()
-        assert p0["AT co2 removal claim"] == pytest.approx(10.0)
-        assert p0["NL co2 removal claim"] == pytest.approx(0.0, abs=1e-6)
-        assert national(n, "AT") == pytest.approx(-10.0)
+    @pytest.fixture(scope="class")
+    def n(self) -> pypsa.Network:
+        return solve(build_capture_toy(), "carrier")
+
+    def test_credit_stays_with_capturing_country(self, n):
+        used = 2 * 0.8 * EF["gas"]
+        assert national(n, "AT") == pytest.approx(-10.0 + used)
         assert national(n, "NL") == pytest.approx(0.0, abs=1e-6)
 
-    def test_same_total_as_technology(self):
-        carrier = solve(build_removal_toy(), "carrier")
-        technology = solve(build_removal_toy(), "technology")
-        assert booked(carrier).sum() == pytest.approx(booked(technology).sum())
+    def test_credit_equals_exported_co2(self, n):
+        exported = n.links_t.p0["CO2 pipeline AT1 -> NL1"].sum()
+        assert national(n, "AT") == pytest.approx(-exported)
 
-    def test_claims_bounded_by_capture(self):
-        n = build_removal_toy(nl_capture=4.0)
-        snakemake = carbon_accounting_snakemake()
-        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
-        n.links.loc["AT co2 removal claim", "marginal_cost"] = -1.0
-        n.optimize(
-            solver_name="highs",
-            extra_functionality=lambda n, _: constraint_carbon_accounting(
-                n, snakemake, 2050
-            ),
-        )
-        p0 = n.links_t.p0.sum()
-        assert p0["AT co2 removal claim"] == pytest.approx(10.0)
-        assert p0["NL co2 removal claim"] == pytest.approx(8.0)
+    def test_ccu_charged_at_the_ccu_plant(self, n):
+        assert booked(n)["AT1 Sabatier"] == pytest.approx(2 * 0.8 * EF["gas"])
+
+    def test_same_total_as_technology(self, n):
+        technology = solve(build_capture_toy(), "technology")
+        assert booked(n).sum() == pytest.approx(booked(technology).sum())
 
 
 def _require_carrier(nc) -> None:
@@ -339,20 +358,21 @@ def _annual_p0(n: pypsa.Network) -> pd.Series:
     )
 
 
-def _gross_delta(n: pypsa.Network) -> pd.Series:
-    """Return ``stored + EF_out * out`` of the transformed classes (section 3.2)."""
+def _carrier_delta(n: pypsa.Network) -> pd.Series:
+    """Return ``EF_out * out + used`` of the transformed classes (section 3.2)."""
     ef = {
         fuel: -n.links.efficiency[n.links.carrier == CLAIM_CARRIERS[fuel]].iloc[0]
         for fuel in ("gas", "oil", "methanol")
     }
-    carriers = [c for k in ("G1", "C1", "V1") for c in TRANSFORMATION_CLASSES[k]]
+    carriers = [c for k in ("G1", "G2") for c in TRANSFORMATION_CLASSES[k]]
     idx = n.links.index[n.links.carrier.isin(carriers)]
     delta = pd.Series(0.0, index=idx)
     producer = n.links.loc[idx, "carrier"].isin(GREEN_BIO_PRODUCERS)
     for port in link_ports(n):
         carrier = port_bus_carrier(n, port).loc[idx]
         efficiency = port_efficiency(n, port).loc[idx]
-        delta += efficiency.where(carrier == "co2 stored", 0.0)
+        used = -efficiency.clip(upper=0.0).where(~producer, 0.0)
+        delta += used.where(carrier == "co2 stored", 0.0)
         if port != "0":
             output = efficiency.clip(lower=0).where(producer, 0.0)
             delta += carrier.map(ef).fillna(0.0) * output
@@ -373,7 +393,7 @@ class TestSolvedNetworks:
             emissions = booked(n)
             claims = n.links.carrier.isin(CLAIM_CARRIERS.values())
             imports = n.links.carrier.isin(GREEN_IMPORTS)
-            delta = _gross_delta(n)
+            delta = _carrier_delta(n)
             # carrier total = technology total + delta - imports + claims
             difference = (
                 emissions[claims].sum()
@@ -391,8 +411,9 @@ class TestSolvedNetworks:
             assert net.abs().max() <= 1e-3
 
     def test_only_claims_book_negative(self, nc):
-        """I3: negative annual emissions only from claims and municipal waste."""
-        allowed = {*CLAIM_CARRIERS.values(), "municipal solid waste"}
+        """I3: negative annual emissions only from claims, capture and municipal waste."""
+        bio_cc = {c for c in GREEN_BIO_PRODUCERS if c.endswith(" CC")}
+        allowed = {*CLAIM_CARRIERS.values(), *CAPTURE, *bio_cc, "municipal solid waste"}
         for n in nc:
             emissions = booked(n)
             p0 = _annual_p0(n).abs()
@@ -451,7 +472,6 @@ class TestClaimCost:
         apply_carbon_accounting(carbon_network, snakemake, carbon_accounting_costs())
         cost = carbon_network.links.marginal_cost
         assert cost["AT renewable oil claim"] == pytest.approx(0.01 * EF["oil"])
-        assert cost["AT co2 removal claim"] == pytest.approx(0.01)
         assert cost["DE renewable oil claim"] == 0.0
 
     def test_slack_budget_country_does_not_claim(self):

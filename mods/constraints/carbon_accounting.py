@@ -16,15 +16,12 @@ import pandas as pd
 import pypsa
 from linopy import LinearExpression
 
-from mods.constants import CAPTURE_ELIGIBLE, CLAIM_CARRIERS, FUEL_TRANSPORT
+from mods.constants import CLAIM_CARRIERS, FUEL_TRANSPORT
 from mods.network.carbon_accounting import (
     CLAIMS,
     carbon_accounting_method,
     claim_link,
     gas_borders,
-    link_ports,
-    port_bus_carrier,
-    port_efficiency,
     transfer_link,
 )
 
@@ -110,8 +107,7 @@ def claimable_consumers(n: pypsa.Network, ct: str, claim: str) -> pd.Index:
 
 def _add_claim_bounds(n: pypsa.Network) -> None:
     """Bound the claims of each country by its consumption (D4, D7)."""
-    fuel_claims = (c for k, claims in CLAIMS.items() if k != "removal" for c in claims)
-    for claim in fuel_claims:
+    for claim in (c for claims in CLAIMS.values() for c in claims):
         links = n.links.index[n.links.carrier == CLAIM_CARRIERS[claim]]
         for ct in links.str[:2]:
             lhs = annual_flow(n, pd.Index([claim_link(ct, claim)])) - annual_flow(
@@ -119,40 +115,6 @@ def _add_claim_bounds(n: pypsa.Network) -> None:
             )
             name = f"carbon_accounting-claim-{ct}-{claim.replace(' ', '-')}"
             n.model.add_constraints(lhs <= 0, name=name)
-
-
-def gross_capture(n: pypsa.Network) -> pd.Series:
-    """
-    Return the CO2 captured per unit of ``p0`` of the capture-eligible links.
-
-    Parameters
-    ----------
-    n
-        The network.
-
-    Returns
-    -------
-    :
-        Sum of the efficiencies at ``co2 stored`` ports, per eligible link.
-    """
-    idx = n.links.index[n.links.carrier.isin(CAPTURE_ELIGIBLE)]
-    captured = pd.Series(0.0, index=idx)
-    for port in link_ports(n)[1:]:
-        at_store = port_bus_carrier(n, port).loc[idx] == "co2 stored"
-        captured += port_efficiency(n, port).loc[idx].where(at_store, 0.0)
-    return captured
-
-
-def _add_removal_bounds(n: pypsa.Network) -> None:
-    """Bound the removal claims of each country by its gross capture (D9, D15)."""
-    captured = gross_capture(n)
-    claims = n.links.index[n.links.carrier == CLAIM_CARRIERS["removal"]]
-    for ct in claims.str[:2]:
-        capture = captured[captured.index.str.startswith(ct)]
-        lhs = annual_flow(n, pd.Index([claim_link(ct, "removal")])) - annual_flow(
-            n, capture.index, capture
-        )
-        n.model.add_constraints(lhs <= 0, name=f"carbon_accounting-removal-{ct}")
 
 
 def _add_transfer_bounds(n: pypsa.Network) -> None:
@@ -194,4 +156,3 @@ def constraint_carbon_accounting(
     logger.info(f"Adding carbon accounting bounds for {investment_year}.")
     _add_claim_bounds(n)
     _add_transfer_bounds(n)
-    _add_removal_bounds(n)

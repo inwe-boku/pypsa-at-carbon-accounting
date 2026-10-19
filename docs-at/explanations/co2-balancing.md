@@ -119,8 +119,8 @@ mods:
 | Burning a green fuel | emissions in the burning country, like fossil fuel | zero, if the country claims the green fuel |
 | Burning a fossil fuel | emissions in the burning country | emissions in the burning country |
 | Green fuel imports from outside Europe | negative emissions at the entry point (oil and methanol: no country) | zero in the country that claims them |
-| CO2 captured and stored (CCS, DAC) | negative emissions where the CO2 is captured | the capturing country claims the stored CO2 |
-| CO2 captured and turned into e-fuels (CCU) | negative emissions at the capture plant | no credit; the e-fuel itself counts as green |
+| CO2 captured and stored (CCS, DAC) | negative emissions where the CO2 is captured | negative emissions where the CO2 is captured |
+| CO2 captured and turned into e-fuels (CCU) | negative emissions at the capture plant | the e-fuel plant books the CO2 it uses, so the capture credit is cancelled; the e-fuel itself counts as green |
 
 **How the carrier method works.** The gas, oil and methanol networks stay as they are:
 green and fossil molecules still mix in the same pipelines and markets. In parallel, every
@@ -133,13 +133,17 @@ certificates into avoided emissions by *claiming* them, at the emission factor o
    domestic aviation share, like kerosene itself.
 2. Green gas certificates only travel along the gas pipelines: from one country to the
    next, at most as much as gas actually flowed across that border in the year.
-   Certificates for oil and methanol, and for stored CO2, are traded freely across Europe.
+   Certificates for oil and methanol are traded freely across Europe.
 3. Every certificate is claimed by the end of the year. The EU-wide CO2 balance is
    therefore exactly the same as under the technology method; only the split between
    countries changes.
 
-Stored CO2 is credited to the countries that capture CO2 (point sources, DAC, biogenic
-capture), each at most its own gross capture.
+Captured CO2 counts as negative emissions in the capturing country (point sources, DAC,
+biogenic capture), as under the technology method, unless it is used for e-fuels. The
+e-fuel plant (Fischer-Tropsch, Sabatier, methanolisation) books the CO2 it takes as an
+emission in its own country. A country therefore keeps the credit only for CO2 that it
+does not turn into e-fuels itself: CO2 that it stores or exports to storage. If exported
+CO2 is turned into e-fuels abroad, the importing country books it.
 
 **Who claims what.** Within these limits, the model decides which country claims a
 certificate. Countries with a national CO2 budget (Austria, Germany) claim certificates

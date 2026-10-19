@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 # For license information, see the LICENSE.txt file in the project root.
-"""Toy solves for mods/constraints/carbon_accounting.py (spec section 6, U7-U10)."""
+"""Toy solves for mods/constraints/carbon_accounting.py (spec section 6, U7-U14)."""
 
 import warnings
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ from mods.constants import (
     AVIATION_CARRIERS,
     CAPTURE,
     CLAIM_CARRIERS,
+    FAIR_SHARE_KEY,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
 )
@@ -341,6 +342,58 @@ class TestCaptureAndUse:
         assert booked(n).sum() == pytest.approx(booked(technology).sum())
 
 
+def _solve_fair_share(tolerance: float | None) -> pypsa.Network:
+    """Solve the oil toy with AT holding a quarter of the shipping demand."""
+    n = build_oil_toy()
+    n.loads.loc["AT1 shipping", "p_set"] = 5.0
+    n.loads.loc["DE1 shipping", "p_set"] = 15.0
+    snakemake = carbon_accounting_snakemake(budgets=("AT",), fair_share=tolerance)
+    apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+    # reward claims in AT, so AT would take the whole pool if it could
+    n.links.loc["AT renewable oil claim", "marginal_cost"] = -1.0
+    n.optimize(
+        solver_name="highs",
+        extra_functionality=lambda n, _: constraint_carbon_accounting(
+            n, snakemake, 2050
+        ),
+    )
+    return n
+
+
+class TestFairShare:
+    """U13 and U14: AT claims at most its key times the EU green production."""
+
+    @pytest.mark.parametrize(
+        ("tolerance", "expected"), [(None, 10.0), (1.0, 5.0), (2.0, 10.0)]
+    )
+    def test_at_claim(self, tolerance, expected):
+        # 20 MWh green oil; AT consumes 10 MWh and has a key of 0.25
+        p0 = _solve_fair_share(tolerance).links_t.p0.sum()
+        assert p0["AT renewable oil claim"] == pytest.approx(expected)
+        assert p0["DE renewable oil claim"] == pytest.approx(20.0 - expected)
+
+    def test_constraint_names(self):
+        n = build_oil_toy()
+        snakemake = carbon_accounting_snakemake(budgets=("AT",), fair_share=1.0)
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        n.optimize.create_model()
+        constraint_carbon_accounting(n, snakemake, 2050)
+        names = {c for c in n.model.constraints if "fair-share" in c}
+        assert names == {
+            "carbon_accounting-fair-share-AT-oil",
+            "carbon_accounting-fair-share-AT-oil-aviation",
+            "carbon_accounting-fair-share-AT-methanol",
+        }
+
+    def test_disabled_adds_no_constraint(self):
+        n = build_oil_toy()
+        snakemake = carbon_accounting_snakemake(budgets=("AT",))
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        n.optimize.create_model()
+        constraint_carbon_accounting(n, snakemake, 2050)
+        assert not any("fair-share" in c for c in n.model.constraints)
+
+
 def _require_carrier(nc) -> None:
     """Skip the integration tests for runs without carrier-based accounting."""
     methods = {
@@ -487,3 +540,28 @@ class TestClaimCost:
         p0 = n.links_t.p0.sum()
         assert p0["DE renewable oil claim"] == pytest.approx(0.0, abs=1e-6)
         assert p0["AT renewable oil claim"] == pytest.approx(20.0)
+
+
+class TestSolvedFairShare:
+    """I6: on a run with the fair share, budget countries stay within their cap."""
+
+    def test_claims_within_cap(self, nc):
+        _require_carrier(nc)
+        for n in nc:
+            accounting = n.meta["mods"]["carbon_accounting"]
+            if not accounting.get("fair_share", {}).get("enable", False):
+                pytest.skip("integration test needs fair_share.enable")
+            tolerance = accounting["fair_share"]["tolerance"]
+            budgets = n.meta["solving"]["constraints"]["co2_budget_national"]
+            p0 = _annual_p0(n)
+            keys = n.links[FAIR_SHARE_KEY].dropna()
+            keys = keys[keys.index.str[:2].isin(list(budgets))]
+            for claim, key in keys.items():
+                fuel = n.links.at[claim, "carrier"].split()[1]
+                pool = f"EU renewable {fuel} attribute"
+                production = sum(
+                    (port_efficiency(n, port) * p0)[n.links[f"bus{port}"] == pool].sum()
+                    for port in link_ports(n)[1:]
+                )
+                cap = tolerance * key * production
+                assert p0[claim] <= cap * (1 + 1e-6) + 1e-3, claim

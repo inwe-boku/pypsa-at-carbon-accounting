@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 # For license information, see the LICENSE.txt file in the project root.
-"""Tests for mods/network/carbon_accounting.py (spec section 6, U1-U6)."""
+"""Tests for mods/network/carbon_accounting.py (spec section 6, U1-U6, U12, U14)."""
 
 from itertools import combinations
 
@@ -14,6 +14,7 @@ from add_brownfield import add_brownfield
 from evals.utils import get_location
 from mods.constants import (
     CARBON_ACCOUNTING_MARKER,
+    FAIR_SHARE_KEY,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
     GREEN_SYNTHETIC_PRODUCERS,
@@ -31,6 +32,7 @@ from mods.network.carbon_accounting import (
 from test.test_mods.conftest import (
     EF,
     build_carbon_network,
+    build_oil_toy,
     carbon_accounting_costs,
     carbon_accounting_snakemake,
 )
@@ -411,3 +413,48 @@ def test_empty_marker_counts_as_unmarked(carbon_network):
     carbon_network.links[CARBON_ACCOUNTING_MARKER] = ""
     _apply(carbon_network)
     assert _atmosphere(carbon_network)["AT1 Sabatier"] == pytest.approx(0.8 * EF["gas"])
+
+
+class TestFairShareKeys:
+    """U12 and U14: keys from the fixed demand, guard on ``fair_share``."""
+
+    @pytest.fixture
+    def n(self):
+        n = build_oil_toy()
+        n.loads.loc["AT1 shipping", "p_set"] = 5.0
+        n.loads.loc["DE1 shipping", "p_set"] = 15.0
+        snakemake = carbon_accounting_snakemake(fair_share=1.0)
+        apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+        return n
+
+    def test_keys_are_demand_shares(self, n):
+        keys = n.links[FAIR_SHARE_KEY]
+        assert keys["AT renewable oil claim"] == pytest.approx(0.25)
+        assert keys["DE renewable oil claim"] == pytest.approx(0.75)
+
+    def test_keys_of_a_fuel_sum_to_one(self, n):
+        keys = n.links[FAIR_SHARE_KEY]
+        assert keys[keys.index.str.contains(" oil claim")].sum() == pytest.approx(1.0)
+
+    def test_without_demand_the_key_is_zero(self, n):
+        keys = n.links[FAIR_SHARE_KEY]
+        assert keys["AT renewable oil claim aviation"] == 0.0
+        assert keys["AT renewable methanol claim"] == 0.0
+
+    def test_gas_claims_have_no_key(self, n):
+        assert pd.isna(n.links.at["AT renewable gas claim", FAIR_SHARE_KEY])
+
+    def test_disabled_adds_no_keys(self):
+        n = build_oil_toy()
+        apply_carbon_accounting(
+            n, carbon_accounting_snakemake(), carbon_accounting_costs()
+        )
+        assert FAIR_SHARE_KEY not in n.links
+
+    @pytest.mark.parametrize("tolerance", [0.0, -1.0])
+    def test_non_positive_tolerance_raises(self, carbon_network, tolerance):
+        snakemake = carbon_accounting_snakemake(fair_share=tolerance)
+        with pytest.raises(ValueError, match="tolerance must be positive"):
+            apply_carbon_accounting(
+                carbon_network, snakemake, carbon_accounting_costs()
+            )

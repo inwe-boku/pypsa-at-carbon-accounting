@@ -302,6 +302,21 @@ AVIATION_CARRIERS: tuple[str, ...] = (
     CLAIM_CARRIERS["oil aviation"],
 )
 TRANSFER_CARRIER = "renewable gas attribute transfer"
+# fixed demand that defines the fair share key of each pooled claim (D18):
+# carriers of the load buses, each supplied by one consumer link of the fuel
+FAIR_SHARE_DEMAND: frozendict = frozendict(
+    {
+        "oil": (
+            "land transport oil",
+            "naphtha for industry",
+            "shipping oil",
+            "agriculture machinery oil",
+        ),
+        "oil aviation": ("kerosene for aviation",),
+        "methanol": ("industry methanol", "shipping methanol"),
+    }
+)
+FAIR_SHARE_KEY = "fair_share_key"
 DISTRIBUTION_CARRIERS: frozendict = frozendict(
     {k: f"{ATTRIBUTE_CARRIERS[k]} distribution" for k in POOLED_ATTRIBUTES}
 )

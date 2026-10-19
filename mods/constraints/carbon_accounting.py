@@ -6,8 +6,9 @@
 Annual bounds of the carrier-based carbon accounting method.
 
 Countries can claim green fuel attributes up to their own consumption, and gas
-attributes only travel as far as the gas does. See section 3.3 of
-``docs-at/explanations/carbon-accounting-spec.md``.
+attributes only travel as far as the gas does. Optionally, the pooled claims
+of countries with a national budget are capped at their fair share. See
+sections 3.3 and 3.6 of ``docs-at/explanations/carbon-accounting-spec.md``.
 """
 
 import logging
@@ -16,12 +17,17 @@ import pandas as pd
 import pypsa
 from linopy import LinearExpression
 
-from mods.constants import CLAIM_CARRIERS, FUEL_TRANSPORT
+from mods.constants import CLAIM_CARRIERS, FAIR_SHARE_KEY, FUEL_TRANSPORT
 from mods.network.carbon_accounting import (
     CLAIMS,
+    POOL,
+    attribute_bus,
     carbon_accounting_method,
     claim_link,
+    fair_share_tolerance,
     gas_borders,
+    link_ports,
+    port_efficiency,
     transfer_link,
 )
 
@@ -128,6 +134,47 @@ def _add_transfer_bounds(n: pypsa.Network) -> None:
         n.model.add_constraints(lhs <= 0, name=f"carbon_accounting-transfer-{x}-{y}")
 
 
+def green_production(n: pypsa.Network, fuel: str) -> LinearExpression:
+    """
+    Return the annual attributes that flow into the EU pool of a fuel.
+
+    Parameters
+    ----------
+    n
+        The network with an optimisation model.
+    fuel
+        Pooled fuel, ``oil`` or ``methanol``.
+
+    Returns
+    -------
+    :
+        ``sum_t w_t * efficiency * p0(l, t)`` over the attribute ports of
+        all producers and imports of the fuel.
+    """
+    pool = attribute_bus(POOL, fuel)
+    efficiency = pd.Series(0.0, index=n.links.index)
+    for port in link_ports(n)[1:]:
+        efficiency += port_efficiency(n, port).where(n.links[f"bus{port}"] == pool, 0.0)
+    producers = efficiency.index[efficiency != 0]
+    return annual_flow(n, producers, efficiency[producers])
+
+
+def _add_fair_share_bounds(n: pypsa.Network, cts: list[str], tolerance: float) -> None:
+    """Cap the pooled claims of countries with a national budget at their fair share (D18)."""
+    keys = n.links[FAIR_SHARE_KEY].dropna()
+    keys = keys[keys.index.str[:2].isin(cts)]
+    production = {}
+    for claim, key in keys.items():
+        kind = n.links.at[claim, "carrier"]
+        kind = next(k for k, c in CLAIM_CARRIERS.items() if c == kind)
+        fuel = kind.split()[0]
+        if fuel not in production:
+            production[fuel] = green_production(n, fuel)
+        lhs = annual_flow(n, pd.Index([claim])) - tolerance * key * production[fuel]
+        name = f"carbon_accounting-fair-share-{claim[:2]}-{kind.replace(' ', '-')}"
+        n.model.add_constraints(lhs <= 0, name=name)
+
+
 def constraint_carbon_accounting(
     n: pypsa.Network, snakemake, investment_year: int
 ) -> None:
@@ -150,9 +197,13 @@ def constraint_carbon_accounting(
     :
         Adds constraints to ``n.model``.
     """
-    method = carbon_accounting_method(snakemake.config["mods"]["carbon_accounting"])
-    if method != "carrier":
+    config = snakemake.config["mods"]["carbon_accounting"]
+    if carbon_accounting_method(config) != "carrier":
         return
     logger.info(f"Adding carbon accounting bounds for {investment_year}.")
     _add_claim_bounds(n)
     _add_transfer_bounds(n)
+    tolerance = fair_share_tolerance(config)
+    if tolerance is not None:
+        budgets = snakemake.config["solving"]["constraints"]["co2_budget_national"]
+        _add_fair_share_bounds(n, list(budgets or {}), tolerance)

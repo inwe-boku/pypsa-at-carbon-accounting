@@ -460,3 +460,9 @@ mods:
     # EUR/t CO2 on the claims of countries with a national CO2 budget (carrier
     # method only): they claim pooled credits only when their budget needs them
     claim_cost: 0.01
+    # Cap the pooled oil, kerosene and methanol claims of countries with a
+    # national CO2 budget at their share of the EU's fixed demand (carrier
+    # method only). Off: claims are bounded by consumption only
+    fair_share:
+      enable: false
+      tolerance: 1.0  # cap = tolerance x key x EU green production

@@ -15,10 +15,25 @@ EF = {"gas": 0.198, "oil": 0.2571, "methanol": 0.248}
 
 
 def carbon_accounting_snakemake(
-    method: str = "carrier", enable: bool = True, budgets: tuple[str, ...] = ()
+    method: str = "carrier",
+    enable: bool = True,
+    budgets: tuple[str, ...] = (),
+    fair_share: float | None = None,
 ) -> SimpleNamespace:
-    """Return a minimal Snakemake stand-in with the carbon accounting config."""
-    accounting = {"enable": enable, "method": method, "claim_cost": 0.01}
+    """
+    Return a minimal Snakemake stand-in with the carbon accounting config.
+
+    ``fair_share`` is the tolerance of the fair share cap, ``None`` disables it.
+    """
+    accounting = {
+        "enable": enable,
+        "method": method,
+        "claim_cost": 0.01,
+        "fair_share": {
+            "enable": fair_share is not None,
+            "tolerance": 1.0 if fair_share is None else fair_share,
+        },
+    }
     national = {ct: {2050: 0.5} for ct in budgets}
     return SimpleNamespace(
         config={

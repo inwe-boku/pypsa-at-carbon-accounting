@@ -31,6 +31,8 @@ from mods.constants import (
     CO2_BUS_CARRIERS,
     CO2_IMPORT,
     DISTRIBUTION_CARRIERS,
+    FAIR_SHARE_DEMAND,
+    FAIR_SHARE_KEY,
     FUEL_TRANSPORT,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
@@ -530,6 +532,82 @@ def price_claims(n: pypsa.Network, cts: list[str], claim_cost: float) -> None:
     n.links.loc[idx, "marginal_cost"] = -n.links.loc[idx, "efficiency"] * claim_cost
 
 
+def fair_share_tolerance(config: dict) -> float | None:
+    """
+    Return the tolerance of the fair share cap, or ``None`` if it is disabled.
+
+    Parameters
+    ----------
+    config
+        The ``mods.carbon_accounting`` configuration section.
+
+    Returns
+    -------
+    :
+        The configured tolerance.
+
+    Raises
+    ------
+    ValueError
+        If the tolerance is not positive.
+    """
+    fair_share = config["fair_share"]
+    tolerance = fair_share["tolerance"]
+    if tolerance <= 0:
+        raise ValueError(f"Fair share tolerance must be positive, got {tolerance}.")
+    return tolerance if fair_share["enable"] else None
+
+
+def fair_share_keys(n: pypsa.Network) -> pd.Series:
+    """
+    Return each country's share of the EU fixed demand per pooled claim (D18).
+
+    The fixed demand of a claim is the load on the buses listed in
+    :data:`mods.constants.FAIR_SHARE_DEMAND`. The keys are normalised per
+    fuel, over both oil claims together, so the keys of a fuel sum to 1.
+
+    Parameters
+    ----------
+    n
+        The composed network with the accounting layer.
+
+    Returns
+    -------
+    :
+        Key per claim link of the pooled fuels, 0 for countries without
+        fixed demand.
+    """
+    weightings = n.snapshot_weightings.generators
+    loads = n.loads.p_set * weightings.sum()
+    varying = n.loads_t.p_set.mul(weightings, axis=0).sum()
+    loads.update(varying)
+    load_carrier = n.loads.bus.map(n.buses.carrier)
+    load_country = bus_country(n, n.loads.bus)
+
+    demand = {}
+    for claim, carriers in FAIR_SHARE_DEMAND.items():
+        is_demand = load_carrier.isin(carriers)
+        demand[claim] = loads[is_demand].groupby(load_country[is_demand]).sum()
+    demand = pd.DataFrame(demand).fillna(0.0)
+
+    keys = {}
+    for claim in demand:
+        fuel = claim.split()[0]
+        total = demand[[c for c in demand if c.split()[0] == fuel]].to_numpy().sum()
+        for ct in countries(n):
+            has_demand = ct in demand.index and total > 0
+            keys[claim_link(ct, claim)] = (
+                demand.at[ct, claim] / total if has_demand else 0.0
+            )
+    return pd.Series(keys, dtype=float)
+
+
+def add_fair_share_keys(n: pypsa.Network) -> None:
+    """Store the fair share keys in the column ``fair_share_key`` of the claim links."""
+    keys = fair_share_keys(n)
+    n.links[FAIR_SHARE_KEY] = keys.reindex(n.links.index)
+
+
 def mark_transformed(n: pypsa.Network) -> None:
     """Mark all links of the transformed classes, so they are skipped next time."""
     idx = class_links(n, *TRANSFORMED_CLASSES)
@@ -586,13 +664,14 @@ def apply_carbon_accounting(
     Raises
     ------
     ValueError
-        If the method is unknown or a link carrier at a CO2 or fuel bus is
-        not classified.
+        If the method is unknown, the fair share tolerance is not positive,
+        or a link carrier at a CO2 or fuel bus is not classified.
     """
     config = snakemake.config["mods"]["carbon_accounting"]
     method = carbon_accounting_method(config)
     if method != "carrier":
         return
+    tolerance = fair_share_tolerance(config)
 
     unclassified = unclassified_carriers(n)
     if unclassified:
@@ -611,3 +690,5 @@ def apply_carbon_accounting(
 
     budgets = snakemake.config["solving"]["constraints"]["co2_budget_national"] or {}
     price_claims(n, list(budgets), config["claim_cost"])
+    if tolerance is not None:
+        add_fair_share_keys(n)

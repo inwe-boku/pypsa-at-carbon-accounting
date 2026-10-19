@@ -153,6 +153,13 @@ would be arbitrary whenever no national budget binds. The evaluation
 *Carbon Accounting Claims* shows the claimed credits per country next to the credit it
 would receive at the EU-average green share of each fuel, so that this effect is visible.
 
+**Fair share (optional).** With `mods.carbon_accounting.fair_share.enable: true`, Austria
+and Germany can claim pooled oil, kerosene and methanol certificates only up to their fair
+share: their share of the EU's fixed demand for that fuel (transport, aviation, naphtha,
+shipping, agriculture, industry methanol) times the green fuel produced in the EU, times
+`tolerance` (default 1). The other countries take the rest. Gas is not affected, because gas
+certificates already follow the pipelines.
+
 **Example.** Austria upgrades 1 TWh of biogas, which is burned in German gas boilers.
 Under `technology`, Austria books −0.198 Mt and Germany +0.198 Mt. Under `carrier`,
 Austria books 0 and Germany books 0.198 Mt for burning the gas and −0.198 Mt for claiming

@@ -209,8 +209,6 @@ Import links keep `p0` in t CO2 (their costs are defined per t). Only bus0 is re
 
 ### 3.6 Fair share (optional, D18)
 
-!!! note "Status: specified, not implemented"
-
 By default, countries with a national budget claim pooled credits up to their own consumption
 (D14). In CA_carrier 2025, Austria claims 68 TWh of green oil, against 3.1 TWh at the fair
 share defined below. The option `fair_share` caps these claims at the country's share of the
@@ -264,6 +262,7 @@ all countries together equal G_f.
 - Compose (`mods/network/carbon_accounting.py`): `fair_share_keys(n)` computes `w` from the loads
   and stores it in a new column `fair_share_key` of the claim links (NaN where no key applies).
   The column survives the netCDF round trip like the transformation marker. No new rule inputs.
+  A budget country without fixed demand of a fuel gets key 0, so it can't claim that pool.
 - Solve (`mods/constraints/carbon_accounting.py`): for every claim link of a budget country with
   a key, add `carbon_accounting-fair-share-{CT}-{kind}`. Guard: `fair_share.enable`.
 - Evals: `view_balance_carbon_claims` additionally shows the cap (`tolerance · w · G_f`) as a third
@@ -413,7 +412,7 @@ Unit tests on small synthetic networks (`test/test_mods/network/test_carbon_acco
 | U9 | Toy solve: capture and use | DAC in X, part used by Sabatier in X, the rest sequestered in Z → X books −(CO2 exported), Z books 0, P5 holds |
 | U10 | Aviation | the `renewable oil claim aviation` contribution is scaled by α in the national LHS and in `view_balance_carbon` |
 | U11 | Country attribution | `get_location` returns CT, not EU, for all claim links (gas, oil, methanol) |
-| U12 | Fair share keys | keys from the fixed loads of 3.6; per fuel they sum to 1 (both oil kinds together); gas claims and countries without fixed demand get no key |
+| U12 | Fair share keys | keys from the fixed loads of 3.6; per fuel they sum to 1 (both oil kinds together); countries without fixed demand get key 0 (capped at zero); gas claims get no key |
 | U13 | Toy solve: fair share | pool of 20 MWh green oil, AT key 0.25, a reward on AT claims → AT claims 5 MWh, DE takes the rest; with `tolerance: 2` AT claims 10 |
 | U14 | Fair share guard | `fair_share.enable: false` or `method: technology` adds no fair share constraint; `tolerance ≤ 0` raises |
 
@@ -472,4 +471,4 @@ Each package is one PR with tests and passes `ruff`, the unit tests and a dry ru
 | D15 | Removal credits: EU pool, each country claims at most its own gross capture. The bound let a country claim credits for CO2 it used for synthetic fuels itself, taken from other countries' sequestration (AT 2050: 1.5 Mt) | superseded by D17 |
 | D16 | Tie-break: claims of countries with a national budget cost `claim_cost` = 0.01 EUR/t, so they claim pooled credits only when their budget needs them. Without it, the split is arbitrary while no budget binds | decided |
 | D17 | Captured CO2 counts as negative emissions in the capturing country unless it is used for a synthetic fuel. Capture keeps its `technology` coefficients; G2 producers book the CO2 they use at `co2 atmosphere` in their own country. No removal pool, claim or bound. CO2 that is exported and used abroad is charged to the importing country | decided |
-| D18 | Optional fair share (`fair_share.enable`, default off): pooled oil, kerosene and methanol claims of budget countries ≤ tolerance × key × EU green production. The key is the country's share of the EU's fixed demand in the current horizon (3.6). Countries without a budget are not capped | decided, not implemented |
+| D18 | Optional fair share (`fair_share.enable`, default off): pooled oil, kerosene and methanol claims of budget countries ≤ tolerance × key × EU green production. The key is the country's share of the EU's fixed demand in the current horizon (3.6). Countries without a budget are not capped | decided |

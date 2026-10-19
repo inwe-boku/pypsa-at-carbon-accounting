@@ -1129,11 +1129,23 @@ def _link_ports(n: pypsa.Network) -> list[str]:
     return sorted(ports, key=int)
 
 
-def _claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
+def claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
     """
     Return the annual consumption that bounds each claim, per country.
 
     Mirrors ``mods.constraints.carbon_accounting.claimable_consumers``.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    p0
+        Weighted annual flow at ``bus0`` per link.
+
+    Returns
+    -------
+    :
+        Consumption in MWh, indexed by country, one column per claim carrier.
     """
     links = n.links
     fuel = links.bus0.map(n.buses.carrier)
@@ -1149,13 +1161,54 @@ def _claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(consumption).fillna(0.0)
 
 
-def _fair_share_caps(n: pypsa.Network, p0: pd.Series) -> pd.Series:
+def pool_inflow(n: pypsa.Network, p0: pd.Series, fuel: str) -> float:
+    """
+    Return the annual attributes that flow into the EU pool of a fuel.
+
+    Mirrors ``mods.constraints.carbon_accounting.green_production``.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    p0
+        Weighted annual flow at ``bus0`` per link.
+    fuel
+        Pooled fuel, ``oil`` or ``methanol``.
+
+    Returns
+    -------
+    :
+        Attributes in MWh, 0 without a pool.
+    """
+    pool = f"EU renewable {fuel} attribute"
+    inflow = 0.0
+    for port in _link_ports(n)[1:]:
+        column = "efficiency" if port == "1" else f"efficiency{port}"
+        at_pool = n.links[f"bus{port}"] == pool
+        inflow += (n.links[column].where(at_pool, 0.0) * p0).sum()
+    return inflow
+
+
+def fair_share_caps(n: pypsa.Network, p0: pd.Series) -> pd.Series:
     """
     Return the fair share cap of the claims of countries with a national budget.
 
     Mirrors ``mods.constraints.carbon_accounting._add_fair_share_bounds``:
     tolerance times key times the annual attributes flowing into the EU pool.
     Empty unless the network was composed with the fair share (D18).
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    p0
+        Weighted annual flow at ``bus0`` per link.
+
+    Returns
+    -------
+    :
+        Cap in MWh of attributes per claim link.
     """
     if "fair_share_key" not in n.links:
         return pd.Series(dtype=float)
@@ -1163,15 +1216,8 @@ def _fair_share_caps(n: pypsa.Network, p0: pd.Series) -> pd.Series:
     budgets = n.meta["solving"]["constraints"]["co2_budget_national"] or {}
     keys = n.links["fair_share_key"].dropna()
     keys = keys[keys.index.str[:2].isin(list(budgets))]
-    production = {}
-    for fuel in {FUEL_CLAIM_CARRIERS[c] for c in n.links.loc[keys.index, "carrier"]}:
-        pool = f"EU renewable {fuel} attribute"
-        production[fuel] = 0.0
-        for port in _link_ports(n)[1:]:
-            column = "efficiency" if port == "1" else f"efficiency{port}"
-            at_pool = n.links[f"bus{port}"] == pool
-            production[fuel] += (n.links[column].where(at_pool, 0.0) * p0).sum()
     fuels = n.links.loc[keys.index, "carrier"].map(FUEL_CLAIM_CARRIERS)
+    production = {fuel: pool_inflow(n, p0, fuel) for fuel in set(fuels)}
     return tolerance * keys * fuels.map(production)
 
 
@@ -1210,7 +1256,7 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     factor = pd.Series(-claims.efficiency.to_numpy(), index=keys)
     claimed = pd.Series(p0[claims.index].to_numpy(), index=keys)
 
-    consumption = _claimable_consumption(n, p0).stack()
+    consumption = claimable_consumption(n, p0).stack()
     consumption.index.names = DataModel.IDX_NAMES[:2]
     fuel = consumption.index.get_level_values(DataModel.CARRIER).map(
         FUEL_CLAIM_CARRIERS
@@ -1223,7 +1269,7 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
 
     reference = reference * factor.reindex(reference.index)
     groups = {"claimed": claimed * factor, "reference": reference.dropna()}
-    caps = _fair_share_caps(n, p0)
+    caps = fair_share_caps(n, p0)
     if not caps.empty:
         caps.index = pd.MultiIndex.from_arrays(
             [caps.index.str[:2], n.links.loc[caps.index, "carrier"]],

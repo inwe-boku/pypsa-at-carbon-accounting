@@ -516,11 +516,12 @@ database_plot_type = "balance"
 database_bus_carrier = "carbon"
 database_specifier = "claims"
 
-# left: credits claimed by the country, right: the credit at the EU-average
-# green share of each fuel
+# credits claimed by the country, the credit at the EU-average green share of
+# each fuel, and the fair share cap of countries with a national budget (D18)
 [view_balance_carbon_claims.bus_carrier_groups]
 "claimed" = "Claimed"
 "reference" = "EU Average Share"
+"cap" = "Fair Share Cap"
 
 [view_balance_carbon_claims.categories]
 "renewable gas claim" = "Renewable Gas Claim"

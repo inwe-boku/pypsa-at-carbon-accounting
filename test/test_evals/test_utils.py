@@ -1298,6 +1298,26 @@ class TestCarbonAccountingClaims:
         assert credits.ge(-1e-9).all()
 
 
+def test_carbon_accounting_claims_fair_share_cap():
+    """D18: the cap of a budget country is tolerance x key x EU green production."""
+    n = build_oil_toy()
+    n.loads.loc["AT1 shipping", "p_set"] = 5.0
+    n.loads.loc["DE1 shipping", "p_set"] = 15.0
+    snakemake = carbon_accounting_snakemake(budgets=("AT",), fair_share=1.0)
+    apply_carbon_accounting(n, snakemake, carbon_accounting_costs())
+    n.meta = snakemake.config
+    n.optimize(
+        solver_name="highs",
+        extra_functionality=lambda n, _: constraint_carbon_accounting(
+            n, snakemake, 2050
+        ),
+    )
+    cap = carbon_accounting_claims(n).xs("cap", level=DataModel.BUS_CARRIER)
+    # 20 MWh green oil, AT key 0.25; DE has no budget and no cap
+    assert cap[("AT", "renewable oil claim")] == pytest.approx(5 * 0.2571)
+    assert "DE" not in cap.index.get_level_values(DataModel.LOCATION)
+
+
 def test_carbon_accounting_claims_empty_without_claims():
     n = build_gas_toy()
     n.optimize(solver_name="highs")

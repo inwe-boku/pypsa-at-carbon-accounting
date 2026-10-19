@@ -1149,13 +1149,41 @@ def _claimable_consumption(n: pypsa.Network, p0: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(consumption).fillna(0.0)
 
 
+def _fair_share_caps(n: pypsa.Network, p0: pd.Series) -> pd.Series:
+    """
+    Return the fair share cap of the claims of countries with a national budget.
+
+    Mirrors ``mods.constraints.carbon_accounting._add_fair_share_bounds``:
+    tolerance times key times the annual attributes flowing into the EU pool.
+    Empty unless the network was composed with the fair share (D18).
+    """
+    if "fair_share_key" not in n.links:
+        return pd.Series(dtype=float)
+    tolerance = n.meta["mods"]["carbon_accounting"]["fair_share"]["tolerance"]
+    budgets = n.meta["solving"]["constraints"]["co2_budget_national"] or {}
+    keys = n.links["fair_share_key"].dropna()
+    keys = keys[keys.index.str[:2].isin(list(budgets))]
+    production = {}
+    for fuel in {FUEL_CLAIM_CARRIERS[c] for c in n.links.loc[keys.index, "carrier"]}:
+        pool = f"EU renewable {fuel} attribute"
+        production[fuel] = 0.0
+        for port in _link_ports(n)[1:]:
+            column = "efficiency" if port == "1" else f"efficiency{port}"
+            at_pool = n.links[f"bus{port}"] == pool
+            production[fuel] += (n.links[column].where(at_pool, 0.0) * p0).sum()
+    fuels = n.links.loc[keys.index, "carrier"].map(FUEL_CLAIM_CARRIERS)
+    return tolerance * keys * fuels.map(production)
+
+
 def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     """
     Compare the claimed CO2 credits of each country with a reference.
 
     Under the carrier-based carbon accounting, countries claim green fuel
     credits up to their own consumption (D14). The reference for a fuel is
-    the credit at the EU-average green share of that fuel.
+    the credit at the EU-average green share of that fuel. With the optional
+    fair share (D18), the cap of each country with a national budget is
+    added as a third group.
 
     Parameters
     ----------
@@ -1166,8 +1194,8 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     -------
     :
         Credits in t CO2, positive, indexed by ``location`` (country),
-        ``carrier`` (the claim) and ``bus_carrier`` (``claimed`` or
-        ``reference``). Empty without claim links.
+        ``carrier`` (the claim) and ``bus_carrier`` (``claimed``,
+        ``reference`` or ``cap``). Empty without claim links.
     """
     weightings = n.snapshot_weightings.generators
     p0 = n.links_t.p0.mul(weightings, axis=0).sum().reindex(n.links.index, fill_value=0)
@@ -1194,10 +1222,15 @@ def carbon_accounting_claims(n: pypsa.Network) -> pd.Series:
     reference = consumption * fuel.map(share).fillna(0.0).to_numpy()
 
     reference = reference * factor.reindex(reference.index)
-    credits = pd.concat(
-        {"claimed": claimed * factor, "reference": reference.dropna()},
-        names=[DataModel.BUS_CARRIER],
-    )
+    groups = {"claimed": claimed * factor, "reference": reference.dropna()}
+    caps = _fair_share_caps(n, p0)
+    if not caps.empty:
+        caps.index = pd.MultiIndex.from_arrays(
+            [caps.index.str[:2], n.links.loc[caps.index, "carrier"]],
+            names=DataModel.IDX_NAMES[:2],
+        )
+        groups["cap"] = caps * factor.reindex(caps.index)
+    credits = pd.concat(groups, names=[DataModel.BUS_CARRIER])
     credits = credits.reorder_levels(DataModel.IDX_NAMES).sort_index()
     credits.attrs["unit"] = "t_co2"
     return credits

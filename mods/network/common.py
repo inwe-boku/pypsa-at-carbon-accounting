@@ -26,6 +26,7 @@ from mods.demand.heat_demand import apply_heat_demand
 from mods.demand.industrial_demand import apply_industrial_demand_profiles
 from mods.network.biogas import add_existing_biogas_chp_at
 from mods.network.biomass import apply_ch_biomass_split
+from mods.network.carbon_accounting import apply_carbon_accounting
 from mods.network.electricity import apply_tyndp_transmission_lower_bounds
 from mods.network.gas import (
     block_russian_gas_imports,
@@ -178,6 +179,9 @@ def modify_prenetwork(n: pypsa.Network, snakemake: Snakemake) -> None:
 
     deduct_existing_capacities(n, p_nom_max_before, int(snakemake.wildcards.horizon))
     raise_potentials_to_minimum(n)
+
+    # last network change, so that every link exists, including brownfield links
+    apply_carbon_accounting(n, snakemake, costs)
 
     # Apply Load clipping just before the solve step
     clip_negative_loads_for_edge_cases(n, snakemake)

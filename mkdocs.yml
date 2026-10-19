@@ -24,6 +24,7 @@ nav:
     - clustering: reference/mods/clustering.md
     - Constraints:
       - reference/mods/constraints/index.md
+      - carbon_accounting.py: reference/mods/constraints/carbon_accounting.md
       - co2_budget.py: reference/mods/constraints/co2_budget.md
       - eag.py: reference/mods/constraints/eag.md
       - tyndp.py: reference/mods/constraints/tyndp.md
@@ -32,6 +33,7 @@ nav:
       - reference/mods/network/index.md
       - biogas.py: reference/mods/network/biogas.md
       - biomass.py: reference/mods/network/biomass.md
+      - carbon_accounting.py: reference/mods/network/carbon_accounting.md
       - common.py: reference/mods/network/common.md
       - electricity.py: reference/mods/network/electricity.md
       - gas.py: reference/mods/network/gas.md
@@ -71,6 +73,7 @@ nav:
     - Road Mobility Demand: explanations/data-flows/road-demand.md
     - Electricity Base Load: explanations/data-flows/electricity-base-load.md
   - National CO2 Balance: explanations/co2-balancing.md
+  - Carbon Accounting Methods: explanations/carbon-accounting-spec.md
   - TYNDP H2 Import Infrastructure: explanations/h2-imports.md
   - Electricity Grid:
     - explanations/electricity-grid/index.md

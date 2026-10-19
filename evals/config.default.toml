@@ -405,6 +405,11 @@ legend_order = [
     "Export Domestic",
     "Export Foreign",
     "Global Market",
+    # carbon accounting method 'carrier'
+    "Renewable Gas Claim",
+    "Renewable Oil Claim",
+    "Renewable Kerosene Claim",
+    "Renewable Methanol Claim",
 ]
 checks = []  # "balances_almost_zero" deactivated, because it is not applicable for carbon budgets
 exports = []
@@ -414,6 +419,10 @@ database_bus_carrier = "carbon"
 database_specifier = ""
 
 [view_balance_carbon.categories]
+"renewable gas claim" = "Renewable Gas Claim"
+"renewable oil claim" = "Renewable Oil Claim"
+"renewable oil claim aviation" = "Renewable Kerosene Claim"
+"renewable methanol claim" = "Renewable Methanol Claim"
 "agriculture machinery oil" = "Agriculture"
 "biogas to gas" = "Biogas"
 "biogas to gas CC" = "Biogas"
@@ -487,6 +496,38 @@ database_specifier = ""
 "HVC to air" = "Waste"
 "municipal solid waste" = "Waste"
 "Transmission Losses" = "Transmission Losses"
+
+[view_balance_carbon_claims]
+name = "Carbon Accounting Claims"
+unit = "Mt_co2"
+file_name = "balance_carbon_claims_{location}"
+chart = "ESMGroupedBarChart"
+cutoff = 0.01
+legend_order = [
+    "Renewable Gas Claim",
+    "Renewable Oil Claim",
+    "Renewable Kerosene Claim",
+    "Renewable Methanol Claim",
+]
+checks = []
+exports = ["csv"]
+# upload data model attributes
+database_plot_type = "balance"
+database_bus_carrier = "carbon"
+database_specifier = "claims"
+
+# credits claimed by the country, the credit at the EU-average green share of
+# each fuel, and the fair share cap of countries with a national budget (D18)
+[view_balance_carbon_claims.bus_carrier_groups]
+"claimed" = "Claimed"
+"reference" = "EU Average Share"
+"cap" = "Fair Share Cap"
+
+[view_balance_carbon_claims.categories]
+"renewable gas claim" = "Renewable Gas Claim"
+"renewable oil claim" = "Renewable Oil Claim"
+"renewable oil claim aviation" = "Renewable Kerosene Claim"
+"renewable methanol claim" = "Renewable Methanol Claim"
 
 [view_balance_fuels]
 name = "Fuel Balance"
@@ -1540,6 +1581,11 @@ legend_order = [
     "SMR",
     "Waste",
     "Liquids",
+    # carbon accounting method 'carrier'
+    "Renewable Gas Claim",
+    "Renewable Oil Claim",
+    "Renewable Kerosene Claim",
+    "Renewable Methanol Claim",
 ]
 checks = []
 exports = []
@@ -1553,6 +1599,10 @@ xaxis_title=""
 pivot_index=["year", "location", "carrier"]
 
 [view_timeseries_carbon.categories]
+"renewable gas claim" = "Renewable Gas Claim"
+"renewable oil claim" = "Renewable Oil Claim"
+"renewable oil claim aviation" = "Renewable Kerosene Claim"
+"renewable methanol claim" = "Renewable Methanol Claim"
 "BioSNG" = "Biogas"
 "BioSNG CC" = "Biogas"
 "CCGT" = "Thermal Powerplant"

@@ -14,3 +14,11 @@ CA_carrier:
   mods:
     carbon_accounting:
       method: carrier
+
+CA_carrier_fair:
+  description: CA_carrier with pooled claims of AT and DE capped at their fair share
+  mods:
+    carbon_accounting:
+      method: carrier
+      fair_share:
+        enable: true

@@ -1,6 +1,7 @@
 # Specification: Carbon Accounting Comparison Notebook
 
-Status: agreed in discussion; ready for implementation.
+Status: implemented in `evals/carbon_accounting.py` and `evals/notebooks/carbon_accounting.py`
+(AI-assisted). Deviations found during implementation are marked *Implementation note*.
 
 ## Goal
 
@@ -60,10 +61,16 @@ kerosene claims are scaled by α, as in the national constraint.
 |---|---|---|---|
 | Fuel use | +EF at all fuel users (fossil and green molecules) | ✓ | ✓ |
 | Process & waste | `process emissions`, `HVC to air`, waste CHP, `municipal solid waste` | ✓ | ✓ |
-| Capture credit | capture links (C1), stored share of bio-CC links | ✓ | ✓ |
+| Capture credit | CO2 captured into `co2 stored` by capture links (C1) and bio-CC links; vent | ✓ | ✓ |
 | Creation credit | −EF·out of G1 bio-fuel producers | ✓ | 0 |
 | CCU charge | +CO2 used by G2 (FT, Sabatier, methanolisation) | 0 | ✓ |
 | Claims (gas, oil, kerosene, methanol) | claim links, one category per fuel | 0 | ✓ |
+
+*Implementation note:* a capture link books only the CO2 it captures as capture credit. The
+rest of its emission goes to the category of the link: residual emissions of `SMR CC` or
+`allam methanol` to fuel use, `process emissions CC` and `waste CHP CC` to process & waste, the
+rest of bio-CC links to the creation credit (≈ 0 under `carrier`). Green imports (G3) count as
+creation credit. Links are selected by name prefix, as in the national budget.
 
 The categories add up exactly to the country's reported total, so a waterfall between two scenarios
 closes exactly. The category definitions are expected to need several interactive rounds once
@@ -109,6 +116,13 @@ first that applies wins:
 - μ is shown next to `claim_cost` as a cross-check: `paper` should give μ ≈ `claim_cost`.
 - Tolerances are module constants: ε_μ = 1e-3 €/t, ε_b = 1e-3 (dual units), ε_p = 1e-6.
   They are to be checked against the real duals.
+- *Implementation note:* the duals of the `carbon_accounting-*` constraints exist only in the
+  linopy model and are not stored in the solved network. A bound counts as binding if it is
+  tight (relative slack ≤ 1e-3) and its estimated dual `μ · credit − claim cost` is ≥ ε_b
+  (EUR/MWh), with `credit` the national credit per MWh of attributes (EF, times α for
+  kerosene). In CA_carrier 2025/2030 μ ≈ 0.01 €/t and the methanol claim bound is tight, but its
+  estimated dual is below ε_b, so the regime is `paper`. Storing the duals at solve time would
+  make the estimate unnecessary.
 - Why the pool test works: every attribute must be claimed within the year (cyclic stores, no
   sink), so countries without a budget take the rest of the pool. While they still claim
   something, CT can take more at `claim_cost`.

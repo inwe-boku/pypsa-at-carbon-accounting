@@ -517,6 +517,35 @@ def checks(
     ]
 
 
+def merge_checks(results: list[Check]) -> Check:
+    """
+    Merge the results of one check over several scenarios.
+
+    Scenarios with nothing to check (no details) are left out, so a carrier
+    run is not hidden behind a technology run that skipped the check.
+
+    Parameters
+    ----------
+    results
+        One result of the same check per scenario, see :func:`checks`.
+
+    Returns
+    -------
+    :
+        Failed if any scenario failed, with the details of all scenarios.
+    """
+    checked = [c for c in results if not c.details.empty]
+    if not checked:
+        return results[0]
+    details = pd.concat([c.details for c in checked])
+    return Check(
+        results[0].name,
+        "fail" if any(c.failed for c in checked) else "ok",
+        f"Largest deviation: {details.deviation.max():.1e}.",
+        details,
+    )
+
+
 def against_budget(totals: pd.DataFrame, budget: pd.Series) -> pd.DataFrame:
     """
     Return the national totals minus the national budget of the horizon.

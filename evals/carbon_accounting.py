@@ -422,14 +422,18 @@ def national_co2_categories(
     captured = _link_flows(flows, "co2 stored").reindex(links.index, fill_value=0.0)
     carrier = links.carrier
 
+    # credit + rest = emitted per link: the split moves CO2 between
+    # categories, it never adds any (check I5 compares the sum with the LHS)
     is_capture = carrier.isin(CAPTURE + GREEN_BIO_PRODUCERS)
-    credit = -captured.clip(lower=0.0).where(is_capture, 0.0)
+    credit = -captured.where(is_capture, 0.0)
     rest = emitted - credit
 
     category = pd.Series(FUEL_USE, index=links.index)
     category[carrier.isin(PROCESS_AND_WASTE_CARRIERS)] = PROCESS_AND_WASTE
     category[carrier.isin(GREEN_BIO_PRODUCERS + GREEN_IMPORTS)] = CREATION_CREDIT
     category[carrier.isin(GREEN_SYNTHETIC_PRODUCERS)] = CCU_CHARGE
+    # venting releases captured CO2 again, so it nets against the capture
+    # credit; only built with sector.co2_vent (off in the AT configs)
     category[carrier.isin(VENT)] = CAPTURE_CREDIT
     for claim, name in CLAIM_CATEGORIES.items():
         category[carrier == claim] = name
@@ -786,6 +790,21 @@ def budget_regime(n: pypsa.Network, country: str) -> tuple[str, str]:
     The rules of the spec are checked in order: ``slack``, ``physical``,
     ``pool-scarce``, ``paper``. A credit bound binds if its estimated dual
     (see :func:`credit_bounds`) is at least :data:`EPS_BOUND`.
+
+    The regime answers what one more t of budget reduction costs CT, and so
+    how to read the national CO2 price ``mu``. The categories follow the
+    cheapest source of the next credit: none needed (``slack``), none left in
+    CT so CT must abate (``physical``), only from another budget country
+    (``pool-scarce``), or spare credits at the claim cost (``paper``). The
+    order matters: a binding bound of CT wins over a scarce pool, since CT
+    cannot claim more even if the pool had spare attributes. ``paper`` is
+    the fallback and not tested directly; ``mu`` next to the claim cost is
+    its cross-check.
+
+    The estimated dual assumes that an attribute costs its EU value
+    ``EF * EU price``, which holds while countries without a budget take
+    the rest of the pool. The exact dual would need the attribute price,
+    which is not unique when every claim of a fuel sits at its bound.
 
     Parameters
     ----------

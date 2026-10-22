@@ -208,3 +208,17 @@ class TestFrames:
 def test_checks_pass(networks, frame):
     checks = cp.checks(networks, frame, list(COUNTRIES))
     assert [c.status for c in checks] == ["ok"] * 3
+
+
+def test_merge_checks_keeps_checked_scenarios():
+    details = pd.DataFrame({"deviation": [0.5]}, index=[("carrier", "2050")])
+    skipped = cp.Check("c", "ok", "Nothing to check: no carrier runs.")
+    checked = cp.Check("c", "fail", "Largest deviation: 5.0e-01.", details)
+    merged = cp.merge_checks([skipped, checked])
+    assert merged.failed
+    assert merged.details.compare(details).empty
+
+
+def test_merge_checks_nothing_checked():
+    skipped = cp.Check("c", "ok", "Nothing to check: no carrier runs.")
+    assert cp.merge_checks([skipped, skipped]) is skipped

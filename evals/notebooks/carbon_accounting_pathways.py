@@ -212,11 +212,8 @@ def _(
     totals = cp.national_totals(frame, country)
     budget = cp.budgets({selected[0]: load(_paths[selected[0]])}, [country])[country]
 
-    # one badge per check: a failed scenario if there is one
-    _summary = [
-        next((c for _, c in _items if c.failed), _items[0][1])
-        for _items in _checks.values()
-    ]
+    # one badge per check, merged over the scenarios
+    _summary = [cp.merge_checks([c for _, c in _items]) for _items in _checks.values()]
     _status = "fail" if any(c.failed for c in _summary) else "ok"
     mo.output.replace(
         mo.vstack(

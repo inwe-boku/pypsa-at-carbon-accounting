@@ -126,6 +126,18 @@ first that applies wins:
 - Why the pool test works: every attribute must be claimed within the year (cyclic stores, no
   sink), so countries without a budget take the rest of the pool. While they still claim
   something, CT can take more at `claim_cost`.
+- Why these four regimes: they follow where the next credit of CT comes from. None is needed
+  (`slack`), none is left in CT so CT must abate (`physical`), it can only be taken from
+  another budget country (`pool-scarce`), or spare credits are available at `claim_cost`
+  (`paper`). A binding CT bound is checked before the pools, because CT cannot claim more even
+  from a pool with spare attributes. `paper` is the fallback; μ ≈ `claim_cost` confirms it.
+- Assumption of the estimated dual: an attribute costs its EU value `EF · EU price`, which holds
+  while countries without a budget take the rest of the pool. The exact dual would need the
+  attribute price, which is not unique when every claim of a fuel sits at its bound.
+- Observed in the carbon-accounting runs (AT, DE): `pool-scarce` never occurs (countries
+  without a budget always claim most of both pools). Borderline: CA_carrier_fair 2050 AT is
+  `physical` with μ = 0.07 €/t and estimated duals of ~0.004 €/MWh, just above ε_b; read μ
+  there as close to `paper`.
 
 ### Metrics (all horizons, all selected scenarios)
 

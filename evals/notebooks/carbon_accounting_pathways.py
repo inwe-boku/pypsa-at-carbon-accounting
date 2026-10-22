@@ -341,7 +341,46 @@ def _(EVALUATOR_COLOURS, budget, country, cp, go, layout, mo, totals):
 
 
 @app.cell
-def _(mo, selected, cp):
+def _(country, cp, go, mo, totals):
+    _year = "2040"
+    _horizon = totals.index.get_level_values("horizon").astype(str)
+    _rows = totals[_horizon == _year].droplevel(["run method", "horizon"])
+    _z = _rows.T.reindex(list(cp.EVALUATORS))
+    _heat = go.Figure(
+        go.Heatmap(
+            x=list(_z.columns),
+            y=list(_z.index),
+            z=_z.to_numpy(),
+            text=_z.map(lambda v: "" if v != v else f"{v:.1f}").to_numpy(),
+            texttemplate="%{text}",
+            colorscale="RdBu_r",
+            zmid=0,
+            colorbar=dict(title="Mt CO2"),
+            hovertemplate="%{y}<br>%{x}: %{z:.2f} Mt<extra></extra>",
+        )
+    )
+    _heat.update_layout(
+        title=f"{country} {_year}: emissions per run and evaluator (Mt CO2)",
+        template="plotly_white",
+        height=360,
+        margin=dict(t=60, b=40),
+    )
+    _heat.update_xaxes(title_text="Run", type="category")
+    _heat.update_yaxes(title_text="Evaluator", autorange="reversed")
+    mo.vstack(
+        [
+            mo.md(
+                f"### {country} in {_year}: every run under every evaluator\n\n"
+                "Blank cells: the evaluator does not apply (no claims in a technology run)."
+            ),
+            mo.ui.plotly(_heat),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(cp, mo, selected):
     pathway_run = mo.ui.dropdown(options=selected, value=selected[0], label="Run")
     pathway_evaluator = mo.ui.dropdown(
         options=list(cp.EVALUATORS), value=cp.TECHNOLOGY, label="Evaluator"
@@ -496,6 +535,11 @@ def _(ca, country, cp, frame, mo, totals):
             mo.ui.table(_table.round(2).reset_index(), selection=None),
         ]
     )
+    return
+
+
+@app.cell
+def _():
     return
 
 

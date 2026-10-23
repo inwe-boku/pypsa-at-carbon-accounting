@@ -162,8 +162,13 @@ Cost in CT = capex + opex of the assets located in CT + net trade value of CT.
   the marginal price of that bus: withdrawal is an import cost, injection an export revenue.
   Oil and methanol consumed from the `EU` buses therefore count as imports, and domestic
   Fischer-Tropsch or methanol output into them as exports.
-- **Excluded:** `co2 atmosphere` and the attribute buses. Emissions and claims are accounting,
-  not trade. `co2 stored` flows (CO2 pipelines) are physical and count as trade.
+- **Excluded:** `co2 atmosphere` and `co2 import`. Emissions are accounting, not trade.
+  `co2 stored` flows (CO2 pipelines) are physical and count as trade.
+- **Attributes are trade:** under the carrier method a country pays for the attributes its
+  claims draw from the EU pool (via the pool's distribution link) and from neighbours (gas
+  transfers), and earns for the attributes its producers sell. Where every claim of a fuel sits
+  at its bound (all methanol is green by construction), the LP prices of the fuel and of its
+  attribute are not unique, only their sum is; valuing both keeps the cost in the country unique.
 - Without the trade term, a country that imports e-fuels instead of building plants would
   look cheap.
 

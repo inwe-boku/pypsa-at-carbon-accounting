@@ -83,6 +83,8 @@ ATTRIBUTE_CARRIERS: tuple[str, ...] = (
 )
 # bus carriers that are accounting, not trade
 ACCOUNTING_BUS_CARRIERS: tuple[str, ...] = ("co2", "co2 import", *ATTRIBUTE_CARRIERS)
+# bus carriers that are not traded; attributes are, see country_cost
+NON_TRADE_BUS_CARRIERS: tuple[str, ...] = ("co2", "co2 import")
 POOLED_FUELS: tuple[str, ...] = ("oil", "methanol")
 # claim kinds as used in the constraint names, per claim carrier
 CLAIM_KINDS: dict[str, str] = {
@@ -849,8 +851,11 @@ def country_cost(
     asset of the country at a bus outside the country, and every port of a
     foreign asset at a bus of the country, is a trade valued at the marginal
     price of that bus. Withdrawal is an import cost, injection an export
-    revenue. ``co2 atmosphere``, ``co2 import`` and the attribute buses are
-    accounting, not trade.
+    revenue. ``co2 atmosphere`` and ``co2 import`` are accounting, not
+    trade. Attributes are trade: a country pays for the attributes its
+    claims draw from the pool and other countries. Where every claim sits at
+    its bound, only the sum of the fuel and the attribute price is unique;
+    valuing both keeps the cost unique.
 
     Parameters
     ----------
@@ -873,7 +878,7 @@ def country_cost(
         name: s[s.index.get_level_values("location").str[:2] == country].sum()
         for name, s in [("capex", capex), ("opex", opex)]
     }
-    trade = flows[~flows.bus_carrier.isin(ACCOUNTING_BUS_CARRIERS)]
+    trade = flows[~flows.bus_carrier.isin(NON_TRADE_BUS_CARRIERS)]
     own = (trade.asset_country == country) & (trade.bus_country != country)
     foreign = (trade.asset_country != country) & (trade.bus_country == country)
     cost = pd.Series(

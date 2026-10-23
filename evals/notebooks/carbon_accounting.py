@@ -325,7 +325,13 @@ def _(
                 "## 2 National balance bridge\n\n"
                 "Physical steps (blue) change because the system changed; accounting "
                 "steps (orange) change because the method changed. Kerosene and kerosene "
-                "claims are scaled by the domestic aviation share, as in the national budget."
+                "claims are scaled by the domestic aviation share, as in the national budget.\n"
+                "### Elements\n"
+                "- Fuel use (physical): Default emissions from fuels\n"
+                "- Capture credit (physical): negative emissions from capture\n"
+                "- Creation credit: negative Emissions for biofuel production (negative in technology-driven accounting)\n"
+                "- CCU charge: emissions when creating a fuel from stored co2 (positive in carrier-driven accounting)\n"
+                "- Claims gas/oil etc.: negative emission claims to balance renewable fuels emissions to zero (only in carrier-driven accounting)\n"
             ),
             mo.hstack([horizon_select, a_select, b_select], justify="start", gap=2),
             mo.ui.plotly(_main),
@@ -346,7 +352,6 @@ def _(
 def _(ca, colours, consistent, go, layout, mo, reference, target):
     assert consistent
     cost = ca.add_cost_deltas(target, reference)
-
     _prices = go.Figure()
     for _scenario, _rows in cost.groupby(level="scenario", sort=False):
         _x = _rows.index.get_level_values("horizon")

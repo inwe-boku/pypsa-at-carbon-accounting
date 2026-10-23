@@ -341,6 +341,17 @@ class TestCost:
         cost = ca.country_cost(solved, "DE")
         assert cost.total == pytest.approx(cost.capex + cost.opex + cost.trade)
 
+    def test_fuel_and_attribute_valued_together(self):
+        # DE burns only green gas from AT and claims all of it: a shift between the
+        # gas and the attribute price (non-unique duals) leaves its cost unchanged
+        rewards = {"DE renewable gas claim": 1.0}
+        n = solve(build_gas_toy(), "carrier", budgets=("DE",), rewards=rewards)
+        before = ca.country_cost(n, "DE").trade
+        prices = n.buses_t.marginal_price
+        prices["DE1 gas"] += 1000.0
+        prices["DE renewable gas attribute"] -= 1000.0
+        assert ca.country_cost(n, "DE").trade == pytest.approx(before)
+
     def test_target_cost_deltas(self, solved, oil_technology):
         table = ca.target_cost({"a": {"2050": solved}, "b": {"2050": solved}}, "AT")
         table = ca.add_cost_deltas(table, "a")

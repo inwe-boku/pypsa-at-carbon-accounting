@@ -4,11 +4,13 @@
 # For license information, see the LICENSE.txt file in the project root.
 """Unit tests for evals/carbon_accounting.py on toy networks."""
 
+import numpy as np
 import pandas as pd
 import pypsa
 import pytest
 
 import mods.constants
+import mods.network.carbon_accounting
 from evals import carbon_accounting as ca
 from mods.constraints.carbon_accounting import constraint_carbon_accounting
 from mods.network.carbon_accounting import apply_carbon_accounting
@@ -65,6 +67,26 @@ def add_budget(n: pypsa.Network, country: str, mu: float, constant: float = 0.0)
     """Add a solved national budget constraint with a given dual."""
     n.add("GlobalConstraint", f"co2_limit-{country}", constant=constant, sense="<=")
     n.global_constraints.loc[f"co2_limit-{country}", "mu"] = mu
+
+
+def oil_toy() -> pypsa.Network:
+    """Return the oil toy with idle green imports, which carry the emission factors."""
+    n = build_oil_toy()
+    for fuel, bus in [
+        ("gas", "AT1 gas"),
+        ("oil", "EU oil"),
+        ("methanol", "EU methanol"),
+    ]:
+        n.add(
+            "Link",
+            f"{bus} import",
+            carrier=f"import {fuel}",
+            bus0="co2 atmosphere",
+            bus1=bus,
+            efficiency=1 / EF[fuel],
+            p_nom=0.0,
+        )
+    return n
 
 
 @pytest.fixture(scope="module")
@@ -400,6 +422,128 @@ class TestPhysicalResponse:
         ) == pytest.approx(20 / ca.TWH)
 
 
+def test_accounting_link_carriers_mirror_mods_constants():
+    assert set(ca.ACCOUNTING_LINK_CARRIERS) == set(
+        mods.network.carbon_accounting.ACCOUNTING_LINK_CARRIERS
+    )
+
+
+class TestImplicitTransfers:
+    """Attributes are paid at the shadow price of their bus."""
+
+    EU_PRICE, MU = 200.0, 50.0
+    # attribute price per t CO2, between the EU price and the national value
+    PRICE = 220.0
+
+    @classmethod
+    def priced_carrier(cls) -> pypsa.Network:
+        """Return a carrier run with an EU and an AT CO2 price and set attribute prices."""
+        n = solve(oil_toy(), "carrier", budgets=("AT",))
+        add_budget(n, "AT", mu=-cls.MU)
+        add_budget(n, "EU", mu=-cls.EU_PRICE)
+        n.global_constraints = n.global_constraints.rename(
+            index={"co2_limit-EU": ca.EU_CO2_LIMIT}
+        )
+        attributes = n.buses[n.buses.carrier.isin(ca.ATTRIBUTE_CARRIERS)]
+        for bus, carrier in attributes.carrier.items():
+            n.buses_t.marginal_price[bus] = EF[carrier.split()[1]] * cls.PRICE
+        return n
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def carrier(cls):
+        return cls.priced_carrier()
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def technology(cls):
+        return solve(oil_toy(), "technology")
+
+    def test_trade(self, carrier):
+        # AT makes 20 MWh of green gas and oil, DE (no budget) claims them all
+        trade = ca.attribute_trade(carrier)
+        assert trade.at[("AT", "oil"), "produced"] == pytest.approx(20.0)
+        price = EF["oil"] * self.PRICE
+        assert trade.at[("AT", "oil"), "sales"] == pytest.approx(20.0 * price)
+        assert trade.at[("DE", "oil"), "claimed"] == pytest.approx(20.0)
+        assert trade.at[("DE", "oil"), "purchases"] == pytest.approx(20.0 * price)
+        assert trade.unpriced.sum() == 0.0
+
+    def test_trade_is_zero_sum(self, carrier):
+        trade = ca.attribute_trade(carrier).sum()
+        assert trade.produced == pytest.approx(trade.claimed)
+        assert trade.sales == pytest.approx(trade.purchases)
+
+    def test_no_trade_under_technology(self, technology):
+        assert ca.attribute_trade(technology).empty
+
+    def test_transfers(self, carrier, technology):
+        table = ca.implicit_transfers(
+            {"base": {"2050": technology}, "c": {"2050": carrier}}
+        )
+        assert list(table.index.unique("scenario")) == ["c"]
+        sales = 20.0 * (EF["gas"] + EF["oil"]) * self.PRICE
+        assert table.at[("c", "2050", "AT"), "net"] == pytest.approx(sales / ca.BN)
+        assert table.net.sum() == pytest.approx(0.0)
+
+    def test_prices(self, carrier):
+        prices = ca.attribute_prices(carrier, "AT")
+        oil = prices.loc["oil"]
+        assert oil["EU value"] == pytest.approx(EF["oil"] * self.EU_PRICE)
+        assert oil["national value"] == pytest.approx(
+            EF["oil"] * (self.EU_PRICE + self.MU)
+        )
+        assert oil.price == pytest.approx(EF["oil"] * self.PRICE)
+        assert oil["claimant rent"] == pytest.approx(EF["oil"] * (250.0 - 220.0 - 0.01))
+
+    def test_price_not_unique(self):
+        # below the EU value no country without a budget would leave it unclaimed
+        n = self.priced_carrier()
+        n.buses_t.marginal_price["EU renewable oil attribute"] = -1000.0
+        n.buses_t.marginal_price["AT renewable oil attribute"] = -1000.0
+        buses = ca.attribute_bus_prices(n)
+        assert not buses.at["EU renewable oil attribute", "unique"]
+        assert buses.at["AT renewable gas attribute", "unique"]
+        assert pd.isna(ca.attribute_prices(n, "AT").at["oil", "price"])
+        trade = ca.attribute_trade(n)
+        assert trade.at[("AT", "oil"), "unpriced"] == pytest.approx(20.0)
+        assert trade.at[("AT", "oil"), "sales"] == 0.0
+
+    def test_green_surplus(self):
+        # AT makes 20 MWh of synthetic oil and burns 8, the rest goes to DE
+        n = oil_toy()
+        n.loads.loc["AT1 shipping", "p_set"] = 4.0
+        n = solve(n, "technology")
+        n.add("GlobalConstraint", ca.EU_CO2_LIMIT, sense="<=")
+        n.global_constraints.loc[ca.EU_CO2_LIMIT, "mu"] = -self.EU_PRICE
+        oil = ca.green_surplus(n, "AT").loc["oil"]
+        assert oil.produced == pytest.approx(20.0)
+        assert oil.used == pytest.approx(8.0)
+        assert oil.surplus == pytest.approx(12.0)
+        assert oil.value == pytest.approx(12.0 * EF["oil"] * self.EU_PRICE)
+
+    def test_no_green_surplus_without_production(self, technology):
+        assert ca.green_surplus(technology, "DE").surplus.sum() == 0.0
+
+    def test_prices_without_attributes(self, technology):
+        prices = ca.attribute_prices(technology, "AT")
+        assert prices.price.isna().all()
+        assert prices["claimant rent"].isna().all()
+
+
+def test_national_rent():
+    index = pd.MultiIndex.from_tuples(
+        [("base", "2050"), ("c", "2050")], names=["scenario", "horizon"]
+    )
+    bridge = pd.DataFrame(0.0, index=index, columns=list(ca.ACCOUNTING_CATEGORIES))
+    bridge.loc[("base", "2050"), ca.CREATION_CREDIT] = -2.0
+    bridge.loc[("c", "2050"), "Claims oil"] = -3.0
+    cost = pd.DataFrame({"national CO2 price": [100.0, np.nan]}, index=index)
+    rent = ca.national_rent(bridge, cost)
+    assert rent.at[("base", "2050"), ca.CREATION_CREDIT] == pytest.approx(0.2)
+    assert rent.loc[("c", "2050")].abs().sum() == 0.0
+
+
 def test_difference_table():
     values = pd.Series(
         [1.0, 3.0, 0.0, 0.0],
@@ -423,3 +567,10 @@ def test_summary():
     row = ca.summary(bridge, cost).iloc[0]
     assert row["pre-claim emissions [Mt]"] == 5.0
     assert row["claims [Mt]"] == 2.0
+
+
+def test_implicit_transfers_without_attributes(oil_technology):
+    table = ca.implicit_transfers({"base": {"2050": oil_technology}})
+    assert table.empty
+    assert table.index.names == ["scenario", "horizon", "country"]
+    assert "net" in table.columns

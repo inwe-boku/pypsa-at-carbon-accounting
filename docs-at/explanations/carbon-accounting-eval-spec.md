@@ -43,6 +43,7 @@ later steps don't run on broken inputs.
 | 1 Consistency | Per horizon: EU total at `co2 atmosphere` equal across all selected runs (P5, rel. tol. 1e-6); attribute stores net zero (I2); national LHS = evals balance (I5); fair-share caps respected in every run with fair share enabled (I6). |
 | 2 National balance bridge | Waterfall, horizon selector. |
 | 3 Cost of the national target | All horizons. |
+| 4 Implicit transfers | Value of the green property and who receives it; horizon selector. |
 | 7 Physical system response | All horizons. |
 | Summary | One table, scenario × horizon: pre-claim emissions, claims, reported total and budget of CT; EU system cost Δ and cost in CT Δ vs the reference. |
 
@@ -171,6 +172,18 @@ Cost in CT = capex + opex of the assets located in CT + net trade value of CT.
   attribute are not unique, only their sum is; valuing both keeps the cost in the country unique.
 - Without the trade term, a country that imports e-fuels instead of building plants would
   look cheap.
+
+## (4) Implicit transfers
+
+The green property of one MWh of fuel is worth `EF · (EU price + μ)` in CT. Under carrier the
+producer sells it as an attribute at the shadow price of the attribute bus and the claimant keeps
+the rest as a rent (`attribute_prices`, `attribute_trade`, `implicit_transfers`). Under
+technology nothing is traded, but green fuel that CT makes beyond its own use of that fuel is
+burnt elsewhere: the importer books the emission, CT keeps the creation credit. `green_surplus`
+gives this surplus per fuel (production less own use, at least zero) and values it at the EU
+value `EF · EU price`, what the attribute would fetch under carrier. The notebook shows it as a
+hatched bar next to the pool sales and leaves it out of the net transfer. Fuel mixes in the grid,
+so the surplus is a lower bound of the green fuel burnt abroad.
 
 ## (7) Physical system response (all horizons)
 

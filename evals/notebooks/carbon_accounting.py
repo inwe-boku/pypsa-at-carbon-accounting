@@ -211,6 +211,9 @@ def _(ca, mo):
             "consistency": ca.consistency(networks, country),
             "target": ca.target_cost(networks, country),
             "physical": ca.physical_response(networks, country),
+            "surplus": ca.green_surpluses(networks, country),
+            "transfers": ca.implicit_transfers(networks),
+            "values": ca.attribute_values(networks, country),
         }
 
     return (scenario_frames,)
@@ -228,8 +231,20 @@ def _(country, files, mo, pd, scenario_frames, selected):
     consistency = pd.concat([f["consistency"] for f in _frames.values()])
     target = pd.concat([f["target"] for f in _frames.values()])
     physical = pd.concat([f["physical"] for f in _frames.values()])
+    surplus = pd.concat([f["surplus"] for f in _frames.values()])
+    transfers = pd.concat([f["transfers"] for f in _frames.values()])
+    values = pd.concat([f["values"] for f in _frames.values()])
     horizons = sorted(bridge.index.unique("horizon"))
-    return bridge, consistency, horizons, physical, target
+    return (
+        bridge,
+        consistency,
+        horizons,
+        physical,
+        surplus,
+        target,
+        transfers,
+        values,
+    )
 
 
 @app.cell
@@ -441,6 +456,361 @@ def _(ca, colours, consistent, go, layout, mo, reference, target):
 
 
 @app.cell
+def _(cost, mo, reference, selected):
+    # default to the horizon with the highest national CO2 price outside the reference
+    _mu = cost["national CO2 price"].drop(index=reference, level="scenario")
+    _horizon = _mu.groupby(level="horizon").max().fillna(0.0).idxmax()
+    transfer_horizon = mo.ui.dropdown(
+        options=sorted(cost.index.unique("horizon")), value=_horizon, label="Horizon"
+    )
+    _others = [s for s in selected if s != reference]
+    transfer_scenario = mo.ui.dropdown(
+        options=selected, value=_others[-1], label="Scenario (Europe)"
+    )
+    return transfer_horizon, transfer_scenario
+
+
+@app.cell(expand_output=True)
+def _(
+    bridge,
+    ca,
+    cost,
+    country,
+    go,
+    layout,
+    mo,
+    pd,
+    reference,
+    selected,
+    surplus,
+    transfer_horizon,
+    transfer_scenario,
+    transfers,
+    values,
+):
+    _PRODUCER, _CLAIMANT, _CCU = "#2a78d6", "#eb6834", "#6250d6"
+    _technology = [
+        s for s in selected if values.xs(s, level="scenario").price.isna().all()
+    ]
+    _horizon = transfer_horizon.value
+
+    # 4.1 value of the green property of one MWh, per fuel and scenario
+    _v = values.xs(_horizon, level="horizon").reindex(selected, level="scenario")
+    _v = _v.reset_index()
+    _is_tech = _v.scenario.isin(_technology)
+    _producer = _v.price.where(~_is_tech, _v["national value"])
+    _x = [_v.fuel.to_list(), _v.scenario.to_list()]
+    _per_mwh = go.Figure()
+    _per_mwh.add_trace(
+        go.Bar(
+            x=_x,
+            y=_producer,
+            name="to the producer (anywhere)",
+            marker=dict(color=_PRODUCER, line=dict(width=0)),
+            customdata=_is_tech.map(
+                {True: "credit booked at the producer", False: "attribute price"}
+            ),
+            hovertemplate="%{x}<br>%{customdata}: %{y:.2f} €/MWh<extra></extra>",
+        )
+    )
+    _per_mwh.add_trace(
+        go.Bar(
+            x=_x,
+            y=_v["claimant rent"],
+            name=f"to the claimant in {country} (rent)",
+            marker=dict(color=_CLAIMANT, line=dict(width=0)),
+            hovertemplate="%{x}<br>rent: %{y:.2f} €/MWh<extra></extra>",
+        )
+    )
+    for _column, _symbol, _colour in [
+        ("EU value", "line-ew-open", "#8a8984"),
+        ("national value", "line-ew-open", "#0b0b0b"),
+    ]:
+        _per_mwh.add_trace(
+            go.Scatter(
+                x=_x,
+                y=_v[_column],
+                name=f"{_column} EF·(EU price{' + μ' if _column != 'EU value' else ''})",
+                mode="markers",
+                marker=dict(symbol=_symbol, size=28, line=dict(width=2, color=_colour)),
+                hovertemplate="%{x}<br>" + _column + ": %{y:.2f} €/MWh<extra></extra>",
+            )
+        )
+    _unpriced = _v[~_v.unique & ~_is_tech]
+    if not _unpriced.empty:
+        _per_mwh.add_trace(
+            go.Scatter(
+                x=[_unpriced.fuel.to_list(), _unpriced.scenario.to_list()],
+                y=_unpriced["national value"] / 2,
+                mode="text",
+                text=["price not<br>unique"] * len(_unpriced),
+                textfont=dict(color="#8a8984", size=11),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+    layout(
+        _per_mwh,
+        f"{country} {_horizon}: who receives the value of one MWh of green fuel",
+        "€/MWh",
+    )
+    _per_mwh.update_layout(barmode="stack", height=460)
+
+    # 4.2 where the national CO2 price ends up
+    _rent = ca.national_rent(bridge, cost).reindex(selected, level="scenario")
+    _claims = _rent[list(ca.CLAIM_CATEGORIES.values())].sum(axis=1)
+    _rx = [
+        _rent.index.get_level_values("horizon").to_list(),
+        _rent.index.get_level_values("scenario").to_list(),
+    ]
+    _rents = go.Figure()
+    for _y, _name, _colour in [
+        (
+            _rent[ca.CREATION_CREDIT],
+            "green producers in the country (creation credit)",
+            _PRODUCER,
+        ),
+        (_claims, "claimants in the country (claims)", _CLAIMANT),
+        (_rent[ca.CCU_CHARGE], "synthetic producers pay (CCU charge)", _CCU),
+    ]:
+        _rents.add_trace(
+            go.Bar(
+                x=_rx,
+                y=_y,
+                name=_name,
+                marker=dict(color=_colour, line=dict(width=0)),
+                hovertemplate="%{x}<br>%{y:+.3f} bn €<extra>" + _name + "</extra>",
+            )
+        )
+    layout(
+        _rents,
+        f"{country}: what the national CO2 price μ is worth, and to whom",
+        "bn €/a",
+    )
+    _rents.update_layout(barmode="relative", height=440)
+
+    # 4.3 money through the attribute pools for the country
+    _index = pd.MultiIndex.from_product(
+        [selected, sorted(cost.index.unique("horizon"))], names=["scenario", "horizon"]
+    )
+    _own = (
+        transfers[transfers.index.get_level_values("country") == country]
+        .droplevel("country")
+        .reindex(_index, fill_value=0.0)
+        .swaplevel()
+        .sort_index(level="horizon", sort_remaining=False)
+    )
+    _ox = [
+        _own.index.get_level_values("horizon").to_list(),
+        _own.index.get_level_values("scenario").to_list(),
+    ]
+    _money = go.Figure()
+    _money.add_trace(
+        go.Bar(
+            x=_ox,
+            y=_own.sales,
+            name=f"received by producers in {country}",
+            marker=dict(color=_PRODUCER, line=dict(width=0)),
+            hovertemplate="%{x}<br>sales: %{y:.3f} bn €<extra></extra>",
+        )
+    )
+    _money.add_trace(
+        go.Bar(
+            x=_ox,
+            y=-_own.purchases,
+            name=f"paid by claimants in {country}",
+            marker=dict(color=_CLAIMANT, line=dict(width=0)),
+            hovertemplate="%{x}<br>purchases: %{y:.3f} bn €<extra></extra>",
+        )
+    )
+    # under technology the credit of green fuel burnt abroad stays at home
+    _kept = (
+        surplus[surplus.index.get_level_values("scenario").isin(_technology)]
+        .groupby(level=["scenario", "horizon"])
+        .sum()
+        .reindex(_index, fill_value=0.0)
+        .swaplevel()
+        .reindex(_own.index)
+    )
+    _money.add_trace(
+        go.Bar(
+            x=_ox,
+            y=_kept.value,
+            name=f"kept by producers in {country}: green surplus burnt abroad "
+            "(technology, not traded)",
+            marker=dict(
+                color="rgba(0,0,0,0)",
+                line=dict(color=_PRODUCER, width=1.5),
+                pattern=dict(shape="/", fgcolor=_PRODUCER, solidity=0.4),
+            ),
+            customdata=_kept.surplus,
+            hovertemplate="%{x}<br>surplus %{customdata:.2f} TWh at EU value: "
+            "%{y:.3f} bn €<extra></extra>",
+        )
+    )
+    _money.add_trace(
+        go.Scatter(
+            x=_ox,
+            y=_own.net,
+            name="net transfer",
+            mode="markers",
+            marker=dict(symbol="diamond", size=10, color="#0b0b0b"),
+            hovertemplate="%{x}<br>net: %{y:+.3f} bn €<extra></extra>",
+        )
+    )
+    layout(_money, f"{country}: money through the attribute pools", "bn €/a")
+    _money.update_layout(barmode="relative", height=440)
+
+    # 4.4 net transfer of every country in one run
+    _scenario = transfer_scenario.value
+    _has_trade = (_scenario, _horizon) in transfers.index.droplevel("country")
+    if _has_trade:
+        _eu = transfers.xs((_scenario, _horizon), level=["scenario", "horizon"])
+        _eu = _eu[(_eu.sales.abs() + _eu.purchases.abs()) > 1e-6].sort_values("net")
+        _labels = _eu.index.to_series().replace({"EU": "imports (outside Europe)"})
+        _europe = go.Figure(
+            go.Bar(
+                x=_labels,
+                y=_eu.net,
+                marker=dict(
+                    color=[_CLAIMANT if c == country else "#8a8984" for c in _eu.index],
+                    line=dict(width=0),
+                ),
+                customdata=_eu[["sales", "purchases"]].to_numpy(),
+                hovertemplate="%{x}: %{y:+.3f} bn €<br>sales %{customdata[0]:.3f}, "
+                "purchases %{customdata[1]:.3f}<extra></extra>",
+            )
+        )
+        layout(
+            _europe,
+            f"{_scenario} {_horizon}: net transfer per country (+ receives, − pays)",
+            "bn €/a",
+        )
+        _europe.update_layout(height=420, showlegend=False)
+        _europe_view = mo.ui.plotly(_europe)
+    else:
+        _europe_view = mo.callout(
+            mo.md(f"`{_scenario}` has no attribute pools: nothing is traded."),
+            kind="neutral",
+        )
+
+    _unique = values.drop(index=_technology, level="scenario")
+    _unique = _unique[~_unique.unique].reset_index()
+    _unpriced_share = transfers.unpriced.groupby(
+        level=["scenario", "horizon"]
+    ).sum() / (transfers.produced.groupby(level=["scenario", "horizon"]).sum())
+    _warning = (
+        mo.callout(
+            mo.md(
+                "**⚠ Some attribute prices are not unique.** For "
+                + ", ".join(sorted(_unique.fuel.unique()))
+                + f" in {country}, every claim in Europe sits at its bound: all consumption "
+                "is already green. The LP then shifts value freely between the attribute "
+                "price, the fuel price and the duals of the claim bounds (not stored); only "
+                "their sum is determined. These attributes are shown as *price not unique* "
+                "and left out of the money flows "
+                f"({_unpriced_share.min():.0%}–{_unpriced_share.max():.0%} of all attributes "
+                "per run). Step 3 values fuel and attribute together, whose sum is unique."
+            ),
+            kind="warn",
+        )
+        if not _unique.empty
+        else mo.md("")
+    )
+
+    mo.vstack(
+        [
+            mo.md(
+                f"""
+    ## 4 Implicit transfers
+
+    **What is the green property of a fuel worth, and who receives it?** Burning one
+    MWh of fossil fuel in {country} emits EF t CO2. That costs the EU CO2 price under
+    the EU cap and the national price μ under the national budget. One MWh of green
+    fuel avoids both, so in {country} its green property is worth
+    **EF · (EU price + μ)**.
+
+    - **Technology ({reference}):** the credit is booked where the carbon leaves the
+      atmosphere, at the producer and in the producer's country. The producer gets the
+      full value; the credit cannot be sold apart from the fuel.
+    - **Carrier:** the green property becomes an *attribute* that the producer sells
+      into a pool (gas per country, linked along pipelines; oil and methanol EU-wide).
+      Countries without a budget buy any attribute offered below the **EU value**
+      EF · EU price, so the attribute price settles there. The producer, wherever it
+      is, gets the EU value. The national part EF · μ stays with the **claimant** in
+      the budget country as a rent.
+    - So carrier accounting does not add value; it moves μ from domestic producers to
+      domestic claimants, who can buy attributes made anywhere in the pool.
+
+    Shadow prices are not payments: the model has no money flows between countries.
+    Read them as the prices of a competitive market that clears at the optimum.
+    """
+            ),
+            _warning,
+            transfer_horizon,
+            mo.md(
+                f"### 4.1 Value of one MWh of green fuel ({_horizon})\n\n"
+                "The full bar is the national value. Under technology it goes to the "
+                "producer; under carrier the producer gets the attribute price (≈ EU value) "
+                "and the claimant keeps the rest. When μ = 0 both markers coincide and "
+                "there is no rent."
+            ),
+            mo.ui.plotly(_per_mwh),
+            mo.md(
+                "### 4.2 Where the national CO2 price ends up\n\n"
+                "μ times the national credits of each accounting category. Under "
+                "technology μ rewards green production *in* the country; under carrier it "
+                "rewards claims, whatever their origin. μ is the national CO2 price of "
+                "step 3 and is zero in the `slack` regime."
+            ),
+            mo.ui.plotly(_rents),
+            mo.md(
+                f"### 4.3 Money through the attribute pools for {country}\n\n"
+                f"Attributes sold by producers in {country} and bought by its claimants, at "
+                f"the attribute price. Under technology ({reference}) nothing is traded. A "
+                "negative net transfer means the country pays producers elsewhere for "
+                "green properties it books at home.\n\n"
+                f"The hatched bar is a different mechanism. Under technology, green fuel "
+                f"made in {country} beyond its own use of that fuel is burnt elsewhere: "
+                f"the importer books the emission, {country} keeps the creation credit. "
+                "No money flows, but the importer gives up a green property worth the EU "
+                "value EF · EU price per MWh, what the attribute would sell for under "
+                "carrier. Fuel mixes in the grid, so the surplus is a lower bound. The "
+                "net transfer counts the attribute pools only."
+            ),
+            mo.ui.plotly(_money),
+            mo.md(
+                "### 4.4 Who pays whom in Europe\n\n"
+                "Net transfer per country in one run. *Imports (outside Europe)* are the "
+                "green imports, which sell attributes but claim none. The transfers add up "
+                "to zero."
+            ),
+            transfer_scenario,
+            _europe_view,
+            mo.accordion(
+                {
+                    "Values per MWh (€/MWh)": mo.ui.table(
+                        values.round(3).reset_index(), selection=None
+                    ),
+                    f"Attribute trade of {country} (TWh, bn €)": mo.ui.table(
+                        _own.round(4).reset_index(),
+                        selection=None,
+                    ),
+                    f"Green surplus of {country} (TWh, bn €)": mo.ui.table(
+                        surplus.round(4).reset_index(), selection=None
+                    ),
+                    "National rent (bn €)": mo.ui.table(
+                        ca.national_rent(bridge, cost).round(4).reset_index(),
+                        selection=None,
+                    ),
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell
 def _(consistent, mo, physical):
     assert consistent
     group_select = mo.ui.dropdown(
@@ -504,6 +874,17 @@ def _(bridge, ca, cost, mo):
             mo.ui.table(_summary.round(3).reset_index(), selection=None),
         ]
     )
+    return
+
+
+@app.cell
+def _(bridge):
+    bridge.xs("2030", level="horizon")
+    return
+
+
+@app.cell
+def _():
     return
 
 

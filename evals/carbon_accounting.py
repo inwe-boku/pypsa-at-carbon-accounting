@@ -85,6 +85,7 @@ ATTRIBUTE_CARRIERS: tuple[str, ...] = (
 ACCOUNTING_BUS_CARRIERS: tuple[str, ...] = ("co2", "co2 import", *ATTRIBUTE_CARRIERS)
 # bus carriers that are not traded; attributes are, see country_cost
 NON_TRADE_BUS_CARRIERS: tuple[str, ...] = ("co2", "co2 import")
+FUELS: tuple[str, ...] = ("gas", "oil", "methanol")
 POOLED_FUELS: tuple[str, ...] = ("oil", "methanol")
 # claim kinds as used in the constraint names, per claim carrier
 CLAIM_KINDS: dict[str, str] = {
@@ -93,6 +94,12 @@ CLAIM_KINDS: dict[str, str] = {
     "renewable oil claim aviation": "oil aviation",
     "renewable methanol claim": "methanol",
 }
+# links of the accounting layer that move attributes, mirrors mods.constants
+ACCOUNTING_LINK_CARRIERS: tuple[str, ...] = (
+    *CLAIM_KINDS,
+    TRANSFER_CARRIER,
+    *(f"renewable {fuel} attribute distribution" for fuel in POOLED_FUELS),
+)
 
 # categories of the national balance bridge (spec section 2)
 FUEL_USE = "Fuel use"
@@ -127,6 +134,7 @@ EPS_MU = 1e-3  # EUR/t, below this the national CO2 price counts as zero
 EPS_BOUND = 1e-3  # EUR/MWh, estimated dual above which a credit bound binds
 EPS_SLACK = 1e-3  # relative slack below which a credit bound counts as tight
 EPS_POOL = 1e-6  # share of the pool inflow claimed by countries without a budget
+EPS_PRICE = 1e-2  # relative band around the attribute values, see attribute_bus_prices
 # relative tolerance of the consistency checks
 REL_TOL = 1e-6
 
@@ -673,6 +681,37 @@ def co2_price(n: pypsa.Network, constraint: str) -> float:
     return -gc.at[constraint, "mu"] if constraint in gc.index else np.nan
 
 
+def emission_factors(n: pypsa.Network) -> dict[str, float]:
+    """
+    Return the emission factors of gas, oil and methanol in t/MWh.
+
+    Green imports convert one t of CO2 into ``1 / EF`` MWh of fuel
+    (spec section 3.4), so the factors are read from their efficiency.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+
+    Returns
+    -------
+    :
+        Emission factor per fuel.
+
+    Raises
+    ------
+    ValueError
+        If a fuel has no import link or the import links disagree.
+    """
+    ef = {}
+    for fuel in FUELS:
+        efficiency = n.links.efficiency[n.links.carrier == f"import {fuel}"]
+        if efficiency.empty or not np.allclose(efficiency, efficiency.iloc[0]):
+            raise ValueError(f"Cannot read the emission factor of {fuel}.")
+        ef[fuel] = 1 / efficiency.iloc[0]
+    return ef
+
+
 def credit_bounds(n: pypsa.Network, country: str) -> pd.DataFrame:
     """
     Return the credit bounds of a country with their flow, slack and dual.
@@ -854,8 +893,8 @@ def country_cost(
     revenue. ``co2 atmosphere`` and ``co2 import`` are accounting, not
     trade. Attributes are trade: a country pays for the attributes its
     claims draw from the pool and other countries. Where every claim sits at
-    its bound, only the sum of the fuel and the attribute price is unique;
-    valuing both keeps the cost unique.
+    its bound, only the sum of the fuel and the attribute price is unique
+    (see :func:`attribute_bus_prices`); valuing both keeps the cost unique.
 
     Parameters
     ----------
@@ -967,6 +1006,328 @@ def add_cost_deltas(table: pd.DataFrame, reference: str) -> pd.DataFrame:
         horizons = table.index.get_level_values("horizon")
         table[f"Δ {column}"] = table[column] - ref.reindex(horizons).to_numpy()
     return table
+
+
+# --- implicit transfers --------------------------------------------------------
+
+
+def attribute_bus_prices(n: pypsa.Network) -> pd.DataFrame:
+    """
+    Return the yearly shadow price of every attribute bus and whether it is unique.
+
+    Countries without a budget would buy any attribute offered below the EU
+    value ``EF * EU price``, and no claimant gains more than ``EF * (EU
+    price + mu)`` with the highest national CO2 price ``mu``. A price outside
+    this band (widened by :data:`EPS_PRICE`) is not unique: it appears when
+    every claim of the fuel sits at its bound (all consumption is green), so
+    the LP shifts value between the attribute price, the fuel price and the
+    unstored duals of the claim bounds. Only their sum is determined.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+
+    Returns
+    -------
+    :
+        Columns ``fuel``, ``country`` (location of the bus, ``EU`` for the
+        pools), ``price`` (EUR/MWh) and ``unique``, indexed by bus. Empty
+        without attributes.
+    """
+    buses = n.buses[n.buses.carrier.isin(ATTRIBUTE_CARRIERS)]
+    weights = n.snapshot_weightings.objective
+    prices = n.buses_t.marginal_price.reindex(columns=buses.index, fill_value=0.0)
+    table = pd.DataFrame(
+        {
+            "fuel": buses.carrier.str.split().str[1],
+            "country": buses.location.str[:2],
+            "price": prices.mul(weights, axis=0).sum() / weights.sum(),
+        }
+    )
+    ef = table.fuel.map(emission_factors(n)) if not table.empty else table.price
+    eu = co2_price(n, EU_CO2_LIMIT)
+    budgets = n.meta["solving"]["constraints"]["co2_budget_national"] or {}
+    mu = max([0.0, *(np.nan_to_num(co2_price(n, f"co2_limit-{ct}")) for ct in budgets)])
+    lower = ef * eu * (1 - EPS_PRICE)
+    upper = ef * (eu + mu) * (1 + EPS_PRICE)
+    table["unique"] = table.price.between(lower, upper) | np.isnan(eu)
+    return table
+
+
+def attribute_prices(n: pypsa.Network, country: str) -> pd.DataFrame:
+    """
+    Return what the green property of one MWh of fuel is worth, per fuel.
+
+    In the country, one MWh of green fuel instead of fossil fuel avoids
+    ``EF`` t of CO2 under the EU cap and under the national budget, so it
+    is worth the ``national value`` ``EF * (EU price + mu)``. Under the
+    technology method this credit stays with the producer, booked where the
+    carbon leaves the atmosphere. Under the carrier method it becomes an
+    attribute: the producer sells it at the ``price`` of the attribute bus,
+    and a claimant in the country keeps the ``claimant rent``, the national
+    value less the price and the claim cost. ``price`` is the shadow price
+    of the attribute bus of the country (fed freely by the pool for pooled
+    fuels), see :func:`attribute_bus_prices`.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    country
+        Country code.
+
+    Returns
+    -------
+    :
+        Columns ``EF`` (t/MWh), ``EU value``, ``national value``, ``price``,
+        ``claim cost`` and ``claimant rent`` (EUR/MWh), and ``unique`` (see
+        :func:`attribute_bus_prices`) per fuel. ``price``, ``claim cost``
+        and ``claimant rent`` are NaN without attributes (method technology)
+        or if the price is not unique.
+    """
+    ef = pd.Series(emission_factors(n))
+    mu = co2_price(n, f"co2_limit-{country}")
+    eu = co2_price(n, EU_CO2_LIMIT)
+    buses = attribute_bus_prices(n)
+    buses = buses[buses.country == country].set_index("fuel").reindex(list(FUELS))
+    unique = buses.unique.fillna(True).astype(bool)
+    claim_cost = _method(n.meta)[3] if not np.isnan(mu) else 0.0
+    table = pd.DataFrame(
+        {
+            "EF": ef,
+            "EU value": ef * eu,
+            "national value": ef * (eu + np.nan_to_num(mu)),
+            "price": buses.price.where(unique),
+            "unique": unique,
+        }
+    )
+    table["claim cost"] = (ef * claim_cost).where(table.price.notna())
+    table["claimant rent"] = table["national value"] - table.price - table["claim cost"]
+    table.index.name = "fuel"
+    return table
+
+
+def attribute_trade(
+    n: pypsa.Network, flows: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """
+    Return the attributes each country sells to and buys from the pools.
+
+    Green producers inject attributes at the attribute bus of their output
+    and are paid its shadow price; claims withdraw them and pay the price of
+    the claimant's bus. Producers are located with
+    :func:`evals.utils.get_location`, claims by their name prefix.
+    Transfers and the distribution of the pools move attributes between
+    buses of equal price and are left out. Attributes at a bus without a
+    unique price (see :func:`attribute_bus_prices`) are counted as
+    ``unpriced`` and carry no value.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    flows
+        Port flows of ``n``, see :func:`port_flows`; computed if missing.
+
+    Returns
+    -------
+    :
+        Columns ``produced``, ``claimed`` and ``unpriced`` (produced at a
+        bus without a unique price, MWh), ``sales`` and ``purchases`` (EUR),
+        indexed by ``country`` and ``fuel``. Empty without attributes.
+    """
+    flows = port_flows(n) if flows is None else flows
+    unique = attribute_bus_prices(n).unique
+    rows = flows[
+        (flows.component == "Link") & flows.bus_carrier.isin(ATTRIBUTE_CARRIERS)
+    ].assign(
+        fuel=lambda f: f.bus_carrier.str.split().str[1],
+        unique=lambda f: f.bus.map(unique).fillna(True).astype(bool),
+    )
+    rows["value"] = rows.value.where(rows.unique, 0.0)
+    claims = rows[rows.carrier.isin(CLAIM_KINDS)]
+    produced = rows[~rows.carrier.isin(ACCOUNTING_LINK_CARRIERS)]
+    by_claimant = [claims.name.str[:2].rename("country"), claims.fuel]
+    by_producer = [produced.asset_country.rename("country"), produced.fuel]
+    trade = pd.DataFrame(
+        {
+            "produced": -produced.energy.groupby(by_producer).sum(),
+            "claimed": claims.energy.groupby(by_claimant).sum(),
+            "unpriced": -produced.energy.where(~produced.unique, 0.0)
+            .groupby(by_producer)
+            .sum(),
+            "sales": -produced.value.groupby(by_producer).sum(),
+            "purchases": claims.value.groupby(by_claimant).sum(),
+        }
+    )
+    return trade.fillna(0.0).rename_axis(["country", "fuel"])
+
+
+def attribute_values(networks: Networks, country: str) -> pd.DataFrame:
+    """
+    Return :func:`attribute_prices` for every run.
+
+    Parameters
+    ----------
+    networks
+        Solved networks per horizon per scenario.
+    country
+        Country code.
+
+    Returns
+    -------
+    :
+        EUR/MWh per fuel, indexed by ``scenario``, ``horizon`` and ``fuel``.
+    """
+    return pd.concat(
+        {
+            (scenario, horizon): attribute_prices(n, country)
+            for scenario, horizons in networks.items()
+            for horizon, n in horizons.items()
+        },
+        names=["scenario", "horizon"],
+    )
+
+
+def implicit_transfers(networks: Networks) -> pd.DataFrame:
+    """
+    Return the attribute trade of every country for every run.
+
+    Parameters
+    ----------
+    networks
+        Solved networks per horizon per scenario.
+
+    Returns
+    -------
+    :
+        ``produced``, ``claimed`` and ``unpriced`` (TWh), ``sales``, ``purchases`` and
+        ``net`` (sales less purchases, bn EUR) summed over fuels, indexed by
+        ``scenario``, ``horizon`` and ``country``. Runs without attributes
+        have no rows.
+    """
+    frames = {
+        (scenario, horizon): attribute_trade(n).groupby(level="country").sum()
+        for scenario, horizons in networks.items()
+        for horizon, n in horizons.items()
+    }
+    names = ["scenario", "horizon", "country"]
+    if all(frame.empty for frame in frames.values()):
+        table = pd.DataFrame(index=pd.MultiIndex.from_tuples([], names=names))
+    else:
+        table = pd.concat(frames, names=names[:2])
+    table = table.reindex(
+        columns=["produced", "claimed", "unpriced", "sales", "purchases"]
+    )
+    table[["produced", "claimed", "unpriced"]] /= TWH
+    table[["sales", "purchases"]] /= BN
+    table["net"] = table.sales - table.purchases
+    return table
+
+
+def green_surplus(
+    n: pypsa.Network, country: str, flows: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """
+    Return the green fuel a country makes beyond its own use of the fuel.
+
+    The surplus is burnt elsewhere. Under the technology method its credit
+    stays with the producer, while the country that burns it books the
+    emission: the producer's country keeps a green property worth the
+    ``EU value`` per MWh (see :func:`attribute_prices`), the price an
+    attribute of it would fetch under the carrier method. Fuel mixes in the
+    grid, so the surplus is a lower bound of the green fuel burnt abroad.
+
+    Parameters
+    ----------
+    n
+        A solved network.
+    country
+        Country code.
+    flows
+        Port flows of ``n``, see :func:`port_flows`; computed if missing.
+
+    Returns
+    -------
+    :
+        Columns ``produced``, ``used`` and ``surplus`` (MWh) and ``value``
+        (EUR) per fuel.
+    """
+    flows = port_flows(n) if flows is None else flows
+    own = flows[(flows.asset_country == country) & flows.bus_carrier.isin(FUELS)]
+    producers = own[own.carrier.isin(GREEN_BIO_PRODUCERS + GREEN_SYNTHETIC_PRODUCERS)]
+    users = own[
+        own.component.isin(["Link", "Load"])
+        & ~own.carrier.isin(GAS_TRANSPORT)
+        & (own.energy > 0)
+    ]
+    table = pd.DataFrame(
+        {
+            "produced": -producers.energy.groupby(producers.bus_carrier).sum(),
+            "used": users.energy.groupby(users.bus_carrier).sum(),
+        },
+        index=pd.Index(FUELS, name="fuel"),
+    ).fillna(0.0)
+    table["surplus"] = (table.produced - table.used).clip(lower=0.0)
+    table["value"] = table.surplus * attribute_prices(n, country)["EU value"]
+    return table
+
+
+def green_surpluses(networks: Networks, country: str) -> pd.DataFrame:
+    """
+    Return :func:`green_surplus` for every run.
+
+    Parameters
+    ----------
+    networks
+        Solved networks per horizon per scenario.
+    country
+        Country code.
+
+    Returns
+    -------
+    :
+        ``produced``, ``used`` and ``surplus`` (TWh) and ``value`` (bn EUR)
+        per fuel, indexed by ``scenario``, ``horizon`` and ``fuel``.
+    """
+    table = pd.concat(
+        {
+            (scenario, horizon): green_surplus(n, country)
+            for scenario, horizons in networks.items()
+            for horizon, n in horizons.items()
+        },
+        names=["scenario", "horizon"],
+    )
+    table[["produced", "used", "surplus"]] /= TWH
+    table["value"] /= BN
+    return table
+
+
+def national_rent(bridge: pd.DataFrame, cost: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return what the national CO2 price is worth to each accounting category.
+
+    A credit of one t CO2 in the national balance saves the country the
+    national CO2 price, a charge costs it. The value goes to whoever books
+    the entry: green producers under the technology method (creation
+    credit), claimants under the carrier method (claims).
+
+    Parameters
+    ----------
+    bridge
+        Output of :func:`balance_bridge`.
+    cost
+        Output of :func:`target_cost`.
+
+    Returns
+    -------
+    :
+        bn EUR per category of :data:`ACCOUNTING_CATEGORIES`, positive for
+        credits, indexed by ``scenario`` and ``horizon``.
+    """
+    mu = cost["national CO2 price"].fillna(0.0)
+    return -bridge[list(ACCOUNTING_CATEGORIES)].mul(mu, axis=0) * MT / BN
 
 
 # --- physical system response --------------------------------------------------

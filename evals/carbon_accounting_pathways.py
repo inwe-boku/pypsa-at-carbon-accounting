@@ -36,6 +36,7 @@ import pandas as pd
 import pypsa
 
 from evals.carbon_accounting import (
+    FUELS,
     GAS_TRANSPORT,
     GREEN_BIO_PRODUCERS,
     GREEN_IMPORTS,
@@ -46,6 +47,7 @@ from evals.carbon_accounting import (
     Check,
     _method,
     domestic_aviation_share,
+    emission_factors,
     national_budget,
     national_co2_categories,
     port_flows,
@@ -58,7 +60,6 @@ TECHNOLOGY = "technology"
 CARRIER_OPTIMISED = "carrier (optimised)"
 CARRIER_AVERAGE = "carrier (EU average)"
 EVALUATORS: tuple[str, ...] = (TECHNOLOGY, CARRIER_OPTIMISED, CARRIER_AVERAGE)
-FUELS: tuple[str, ...] = ("gas", "oil", "methanol")
 GREEN_PRODUCERS: tuple[str, ...] = (
     *GREEN_BIO_PRODUCERS,
     *GREEN_SYNTHETIC_PRODUCERS,
@@ -88,37 +89,6 @@ def sector(carrier: str) -> str:
         if carrier in keys or any(key in carrier for key in keys):
             return name
     return "Other"
-
-
-def emission_factors(n: pypsa.Network) -> dict[str, float]:
-    """
-    Return the emission factors of gas, oil and methanol in t/MWh.
-
-    Green imports convert one t of CO2 into ``1 / EF`` MWh of fuel
-    (spec section 3.4), so the factors are read from their efficiency.
-
-    Parameters
-    ----------
-    n
-        A solved network.
-
-    Returns
-    -------
-    :
-        Emission factor per fuel.
-
-    Raises
-    ------
-    ValueError
-        If a fuel has no import link or the import links disagree.
-    """
-    ef = {}
-    for fuel in FUELS:
-        efficiency = n.links.efficiency[n.links.carrier == f"import {fuel}"]
-        if efficiency.empty or not np.allclose(efficiency, efficiency.iloc[0]):
-            raise ValueError(f"Cannot read the emission factor of {fuel}.")
-        ef[fuel] = 1 / efficiency.iloc[0]
-    return ef
 
 
 def link_table(n: pypsa.Network, flows: pd.DataFrame | None = None) -> pd.DataFrame:

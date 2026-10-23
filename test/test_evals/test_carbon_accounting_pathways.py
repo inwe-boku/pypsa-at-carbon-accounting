@@ -9,30 +9,10 @@ import pypsa
 import pytest
 
 from evals import carbon_accounting_pathways as cp
-from test.test_evals.test_carbon_accounting import ALPHA, add_budget, solve
+from test.test_evals.test_carbon_accounting import ALPHA, add_budget, oil_toy, solve
 from test.test_mods.conftest import EF, build_oil_toy
 
 COUNTRIES = ("AT", "DE")
-
-
-def oil_toy() -> pypsa.Network:
-    """Return the oil toy with idle green imports, which carry the emission factors."""
-    n = build_oil_toy()
-    for fuel, bus in [
-        ("gas", "AT1 gas"),
-        ("oil", "EU oil"),
-        ("methanol", "EU methanol"),
-    ]:
-        n.add(
-            "Link",
-            f"{bus} import",
-            carrier=f"import {fuel}",
-            bus0="co2 atmosphere",
-            bus1=bus,
-            efficiency=1 / EF[fuel],
-            p_nom=0.0,
-        )
-    return n
 
 
 @pytest.fixture(scope="module")
